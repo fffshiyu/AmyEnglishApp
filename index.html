@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+<meta name="theme-color" content="#FF8C42">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Amy英语打卡">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon.svg">
+<title>🐰 Amy老师英语打卡平台</title>
+<link rel="icon" href="icon.svg">
+<style>
+:root{
+  --primary:#FF8C42;--primary-dark:#E67329;--primary-light:#FFF0E5;
+  --accent:#FF6B9D;--accent-light:#FFE4ED;--accent-dark:#E55585;
+  --teal:#2EC4B6;--teal-light:#E0F7F4;
+  --bg:#FFFAF5;--card:#FFFFFF;--text:#3D2E1F;--text-sub:#8C7B6B;
+  --success:#52C41A;--success-light:#F6FFED;
+  --warning:#FAAD14;--warning-light:#FFFBE6;
+  --danger:#FF4D4F;--danger-light:#FFF1F0;
+  --info:#1890FF;--info-light:#E6F7FF;
+  --shadow:0 2px 10px rgba(255,140,66,.12);
+  --shadow-lg:0 4px 20px rgba(255,140,66,.18);
+  --radius:14px;--radius-sm:10px;
+  --header-h:56px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.6}
+button{cursor:pointer;border:none;font-family:inherit;transition:.2s}
+input,textarea,select{font-family:inherit;font-size:14px;outline:none}
+
+/* Header */
+.app-header{height:var(--header-h);background:linear-gradient(135deg,#FF8C42,#FF6B35);color:#fff;display:flex;align-items:center;padding:0 16px;gap:12px;position:fixed;top:0;left:0;right:0;z-index:100;box-shadow:0 2px 12px rgba(255,107,53,.25)}
+.app-header .logo{display:flex;align-items:center;gap:8px;font-size:16px;font-weight:700;white-space:nowrap}
+.app-header .logo .icon{font-size:22px}
+.header-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.class-badge{background:rgba(255,255,255,.2);padding:4px 10px;border-radius:20px;font-size:12px;white-space:nowrap}
+.invite-btn{background:rgba(255,255,255,.25);color:#fff;padding:6px 12px;border-radius:20px;font-size:12px;white-space:nowrap}
+.invite-btn:hover{background:rgba(255,255,255,.35)}
+
+/* Login */
+.login-page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:12px;background:linear-gradient(135deg,#FFF0E5 0%,#FFE4D1 40%,#FFD6C0 100%)}
+.login-box{background:var(--card);border-radius:20px;padding:32px 24px;max-width:380px;width:100%;box-shadow:var(--shadow-lg)}
+.login-box-compact{padding:20px 18px;max-width:360px}
+.login-box .rabbit{font-size:48px;text-align:center;margin-bottom:8px}
+.login-box h2{text-align:center;font-size:20px;margin-bottom:6px;color:var(--primary-dark)}
+.login-box .subtitle{text-align:center;color:var(--text-sub);font-size:13px;margin-bottom:24px}
+.role-select{display:flex;gap:8px;margin-bottom:16px}
+.role-select button{flex:1;padding:12px 8px;border-radius:var(--radius-sm);background:var(--bg);color:var(--text-sub);font-size:13px;text-align:center}
+.role-select button.active{background:var(--primary);color:#fff}
+.form-group{margin-bottom:14px}
+.form-group label{display:block;font-size:12px;color:var(--text-sub);margin-bottom:4px}
+.form-group input,.form-group select{width:100%;padding:10px 12px;border:1.5px solid #FFE0CC;border-radius:var(--radius-sm);font-size:14px}
+.form-group input:focus,.form-group select:focus{border-color:var(--primary)}
+.login-btn{width:100%;padding:12px;background:var(--primary);color:#fff;border-radius:var(--radius-sm);font-size:15px;font-weight:600;margin-top:8px}
+.login-btn:hover{background:var(--primary-dark)}
+.login-hint{text-align:center;margin-top:12px;font-size:12px;color:var(--text-sub)}
+
+/* Layout */
+#app{padding-top:var(--header-h);min-height:100vh}
+.tab-bar{display:flex;gap:4px;padding:8px 12px;background:var(--card);overflow-x:auto;position:sticky;top:var(--header-h);z-index:50;box-shadow:0 2px 8px rgba(255,140,66,.08)}
+.tab-bar button{padding:8px 14px;border-radius:20px;background:transparent;color:var(--text-sub);font-size:13px;white-space:nowrap;display:flex;align-items:center;gap:4px;transition:.2s}
+.tab-bar button.active{background:linear-gradient(135deg,#FF8C42,#FF6B35);color:#fff;box-shadow:0 2px 8px rgba(255,140,66,.3)}
+.tab-bar button .emoji{font-size:15px}
+.content-area{padding:16px;max-width:1200px;margin:0 auto}
+
+/* Cards */
+.card{background:var(--card);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow);margin-bottom:12px}
+.card-title{font-size:15px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.card-sub{font-size:12px;color:var(--text-sub)}
+
+/* Day plan */
+.day-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:16px}
+.day-card{background:var(--card);border-radius:var(--radius);padding:14px;box-shadow:var(--shadow);border:2px solid transparent;cursor:pointer;transition:.2s}
+.day-card:hover{border-color:var(--primary)}
+.day-card.speaking{border-left:4px solid var(--primary)}
+.day-card .day-name{font-size:16px;font-weight:700;color:var(--primary-dark)}
+.day-card .day-type{font-size:11px;color:var(--text-sub);margin:4px 0}
+.day-card .day-modules{font-size:12px;color:var(--text)}
+.day-card .day-duration{font-size:11px;color:var(--primary);font-weight:600;margin-top:6px}
+
+/* Module list */
+.module-card{background:var(--card);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow);margin-bottom:12px}
+.module-header{padding:12px 16px;background:var(--primary-light);display:flex;align-items:center;justify-content:space-between}
+.module-header .m-name{font-size:15px;font-weight:600;color:var(--primary-dark);display:flex;align-items:center;gap:6px}
+.module-header .m-duration{font-size:12px;color:var(--text-sub)}
+.module-body{padding:16px}
+
+/* Questions */
+.q-item{padding:12px;border-bottom:1px solid #FFF0E5}
+.q-item:last-child{border-bottom:none}
+.q-num{font-size:12px;color:var(--primary);font-weight:600;margin-bottom:4px}
+.q-text{font-size:14px;margin-bottom:8px}
+.q-options{display:flex;flex-direction:column;gap:6px}
+.q-option{padding:8px 12px;border:1.5px solid #FFE0CC;border-radius:var(--radius-sm);font-size:13px;cursor:pointer}
+.q-option:hover{background:var(--primary-light)}
+.q-option.selected{background:var(--primary);color:#fff;border-color:var(--primary)}
+.q-option.correct{background:var(--success-light);border-color:var(--success);color:var(--success)}
+.q-option.wrong{background:var(--danger-light);border-color:var(--danger);color:var(--danger)}
+.q-answer{font-size:12px;color:var(--success);margin-top:6px;font-weight:600}
+.q-explanation{background:var(--info-light);border-radius:var(--radius-sm);padding:10px;margin-top:8px;font-size:12px;display:none}
+.q-explanation.show{display:block}
+.q-explanation .cn{color:var(--text);margin-bottom:4px}
+.q-explanation .en{color:var(--text-sub);font-style:italic}
+
+/* Badges */
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600}
+.badge-success{background:var(--success-light);color:var(--success)}
+.badge-warning{background:var(--warning-light);color:var(--warning)}
+.badge-danger{background:var(--danger-light);color:var(--danger)}
+.badge-primary{background:var(--primary-light);color:var(--primary-dark)}
+
+/* Stats */
+.stat-row{display:flex;gap:8px;flex-wrap:wrap}
+.stat-box{flex:1;min-width:80px;background:var(--bg);border-radius:var(--radius-sm);padding:10px;text-align:center}
+.stat-box .num{font-size:20px;font-weight:700;color:var(--primary)}
+.stat-box .label{font-size:11px;color:var(--text-sub)}
+
+/* Table */
+.data-table{width:100%;border-collapse:collapse;font-size:13px}
+.data-table th{background:var(--primary-light);padding:8px;text-align:left;font-weight:600;color:var(--primary-dark);font-size:12px;white-space:nowrap}
+.data-table td{padding:8px;border-bottom:1px solid #FFF0E5;white-space:nowrap;font-size:12px}
+.data-table tr:hover{background:var(--primary-light)}
+
+/* Baicizhan-style vocab */
+.vocab-game{max-width:500px;margin:0 auto}
+.vocab-stage{background:var(--card);border-radius:var(--radius);padding:24px 16px;box-shadow:var(--shadow-lg);text-align:center;min-height:300px;display:flex;flex-direction:column;justify-content:center}
+.vocab-emoji{font-size:80px;margin-bottom:12px}
+.vocab-word{font-size:28px;font-weight:700;color:var(--primary-dark);margin-bottom:4px}
+.vocab-phonetic{font-size:14px;color:var(--text-sub);margin-bottom:8px}
+.vocab-meaning{font-size:16px;color:var(--text);margin-bottom:16px}
+.vocab-example{font-size:13px;color:var(--text-sub);margin-bottom:20px;font-style:italic}
+.vocab-progress{height:6px;background:var(--bg);border-radius:3px;margin-bottom:16px;overflow:hidden}
+.vocab-progress .fill{height:100%;background:var(--primary);border-radius:3px;transition:.3s}
+.vocab-options{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.vocab-option{padding:14px;border:2px solid #FFE0CC;border-radius:var(--radius-sm);font-size:16px;cursor:pointer;transition:.2s}
+.vocab-option:hover{border-color:var(--primary);background:var(--primary-light)}
+.vocab-option.correct{border-color:var(--success);background:var(--success-light)}
+.vocab-option.wrong{border-color:var(--danger);background:var(--danger-light)}
+.vocab-input{width:100%;padding:12px;border:2px solid #FFE0CC;border-radius:var(--radius-sm);font-size:18px;text-align:center;letter-spacing:4px}
+.vocab-input:focus{border-color:var(--primary)}
+
+/* Spell fill inline */
+.spell-inline-container{display:flex;align-items:center;justify-content:center;gap:2px;font-size:32px;font-weight:700;color:var(--primary-dark);font-family:monospace}
+.spell-letter{display:inline-block;padding:0 2px;letter-spacing:2px}
+.spell-blank-input{width:auto;min-width:40px;max-width:100px;font-size:32px;font-weight:700;text-align:center;border:none;border-bottom:3px solid var(--primary);background:var(--primary-light);border-radius:4px 4px 0 0;color:var(--primary-dark);font-family:monospace;letter-spacing:2px;padding:4px 8px;outline:none;transition:.2s}
+.spell-blank-input:focus{background:var(--primary);color:#fff;border-bottom-color:var(--primary-dark)}
+.spell-blank-input.correct{border-color:var(--success);background:var(--success-light);color:var(--success)}
+.spell-blank-input.wrong{border-color:var(--danger);background:var(--danger-light);color:var(--danger);animation:shake .3s ease}
+@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+.spell-result-word{font-size:28px;font-weight:700;color:var(--primary-dark);margin-top:8px}
+.spell-result-phonetic{font-size:14px;color:var(--text-sub);margin-top:2px}
+.vocab-stars{font-size:18px;margin-bottom:8px}
+.vocab-btn{padding:10px 24px;background:var(--primary);color:#fff;border-radius:20px;font-size:14px;font-weight:600;margin-top:12px}
+
+/* Writing template */
+.writing-template{max-width:600px;margin:0 auto}
+.writing-banner{background:var(--warning-light);border:1px solid var(--warning);border-radius:var(--radius-sm);padding:10px;margin-bottom:16px;font-size:13px;color:var(--warning);display:flex;align-items:center;gap:8px}
+.writing-essay{background:var(--card);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow);margin-bottom:16px;line-height:2;font-size:16px}
+.writing-blank{display:inline-block;min-width:100px;border-bottom:2px solid var(--primary);margin:0 4px;text-align:center;color:var(--primary);font-weight:600}
+.writing-blank input{border:none;border-bottom:none;width:100%;text-align:center;color:var(--primary);font-weight:600;background:transparent}
+.writing-keywords{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+.keyword-chip{background:var(--primary-light);color:var(--primary-dark);padding:4px 12px;border-radius:12px;font-size:12px}
+
+/* A4 error sheet */
+.a4-sheet{width:210mm;min-height:297mm;background:#fff;margin:0 auto;box-shadow:0 4px 20px rgba(0,0,0,.1);padding:20mm 18mm;font-size:12pt;line-height:1.8;position:relative}
+.a4-sheet h1{font-size:18pt;text-align:center;margin-bottom:8px}
+.a4-sheet .a4-info{text-align:center;font-size:10pt;color:#666;margin-bottom:16px;border-bottom:2px solid #333;padding-bottom:8px}
+.a4-sheet .a4-q{margin-bottom:16px}
+.a4-sheet .a4-q-num{font-weight:bold}
+.a4-sheet .a4-ans{background:#f5f5f5;padding:4px 8px;border-radius:4px;font-size:10pt;margin-top:4px;display:none}
+.a4-sheet .a4-ans.show{display:block}
+.a4-sheet .a4-write-area{border-bottom:1px dashed #ccc;min-height:30px;margin:4px 0 8px}
+.a4-sheet .a4-similar{background:#FFF8E1;border:1px dashed var(--warning);border-radius:4px;padding:8px;margin-top:8px;font-size:11pt}
+@media print{
+  body * {visibility:hidden}
+  .a4-print-area,.a4-print-area *{visibility:visible}
+  .a4-print-area{position:absolute;left:0;top:0}
+  .a4-sheet{box-shadow:none;margin:0}
+  @page{size:A4;margin:0}
+  .no-print{display:none!important}
+}
+
+/* Speaking */
+.speaking-card{background:var(--card);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow-lg);max-width:600px;margin:0 auto;text-align:center}
+.speak-sentence{font-size:20px;font-weight:600;margin:16px 0;color:var(--text)}
+.speak-sentence-cn{font-size:14px;color:var(--text-sub);margin-bottom:16px}
+.speak-btn{padding:12px 24px;background:var(--primary);color:#fff;border-radius:24px;font-size:14px;font-weight:600;display:inline-flex;align-items:center;gap:6px}
+.speak-btn:hover{background:var(--primary-dark)}
+.speak-btn.play{background:var(--info)}
+.speak-options{display:flex;flex-direction:column;gap:8px;margin:16px 0}
+.speak-option{padding:12px;border:2px solid #FFE0CC;border-radius:var(--radius-sm);font-size:14px;cursor:pointer}
+.speak-option:hover{border-color:var(--primary);background:var(--primary-light)}
+.speak-option.correct{border-color:var(--success);background:var(--success-light)}
+.speak-option.wrong{border-color:var(--danger);background:var(--danger-light)}
+.speak-tip{background:var(--info-light);border-radius:var(--radius-sm);padding:10px;font-size:12px;margin:12px 0;display:none}
+.speak-tip.show{display:block}
+.speak-record{background:var(--danger-light);border-radius:var(--radius-sm);padding:12px;margin-top:12px;display:none}
+.speak-record.show{display:block}
+.speak-score{font-size:36px;font-weight:700;margin:8px 0}
+.speak-words{font-size:12px;color:var(--text-sub);margin-top:8px}
+.voice-select{display:flex;gap:8px;justify-content:center;margin-bottom:12px}
+.voice-select button{padding:6px 14px;border-radius:16px;background:var(--bg);font-size:12px;color:var(--text-sub)}
+.voice-select button.active{background:var(--primary);color:#fff}
+
+/* Check-in table */
+.checkin-table{overflow-x:auto}
+.checkin-dot{width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px}
+.checkin-dot.done{background:var(--success);color:#fff}
+.checkin-dot.undone{background:var(--danger-light);color:var(--danger)}
+.checkin-dot.partial{background:var(--warning-light);color:var(--warning)}
+
+/* Error book */
+.error-item{background:var(--card);border-radius:var(--radius);padding:12px;box-shadow:var(--shadow);margin-bottom:10px;border-left:4px solid var(--danger)}
+.error-item .e-q{font-size:13px;margin-bottom:4px}
+.error-item .e-students{font-size:11px;color:var(--danger);margin-top:4px}
+
+/* Modal */
+.modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:1000;display:none;align-items:center;justify-content:center;padding:16px}
+.modal-overlay.show{display:flex}
+/* Global toast */
+.app-toast{position:fixed;left:50%;bottom:80px;transform:translateX(-50%) translateY(20px);background:rgba(51,51,51,.92);color:#fff;padding:10px 18px;border-radius:24px;font-size:13px;z-index:2000;opacity:0;pointer-events:none;transition:.3s;max-width:86%;text-align:center;box-shadow:0 4px 16px rgba(0,0,0,.25)}
+.app-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.app-toast.warn{background:rgba(220,53,69,.95)}
+.app-toast.info{background:rgba(21,134,230,.95)}
+.modal{background:var(--card);border-radius:var(--radius);max-width:500px;width:100%;max-height:85vh;overflow-y:auto}
+.modal-header{padding:16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #FFE0CC;position:sticky;top:0;background:var(--card);z-index:1}
+.modal-title{font-size:16px;font-weight:600}
+.modal-close{background:none;font-size:24px;color:var(--text-sub);width:32px;height:32px;display:flex;align-items:center;justify-content:center}
+.modal-body{padding:16px}
+.modal-footer{padding:16px;border-top:1px solid #FFE0CC;display:flex;gap:8px;position:sticky;bottom:0;background:var(--card)}
+
+/* Buttons */
+.btn{padding:8px 16px;border-radius:var(--radius-sm);font-size:13px;font-weight:500}
+.btn-primary{background:var(--primary);color:#fff}
+.btn-primary:hover{background:var(--primary-dark)}
+.btn-outline{background:transparent;border:1.5px solid var(--primary);color:var(--primary)}
+.btn-outline:hover{background:var(--primary-light)}
+.btn-success{background:var(--success);color:#fff}
+.btn-sm{padding:4px 10px;font-size:12px}
+
+/* Invite */
+.invite-content{text-align:center}
+.invite-link{background:var(--bg);padding:12px;border-radius:var(--radius-sm);font-size:13px;word-break:break-all;margin:12px 0}
+.invite-rules{text-align:left;font-size:13px;color:var(--text-sub);margin-top:16px}
+.invite-rules li{margin-bottom:6px}
+.qr-placeholder{width:120px;height:120px;background:var(--bg);border-radius:var(--radius-sm);margin:12px auto;display:flex;align-items:center;justify-content:center;font-size:40px}
+
+/* Responsive */
+@media(max-width:768px){
+  .app-header{padding:0 8px}
+  .app-header .logo span:not(.icon):not(#header-name){display:none}
+  .app-header .logo #header-name{display:inline-block;font-size:13px;max-width:100px}
+  .class-badge{display:none}
+  .content-area{padding:10px}
+  .day-grid{grid-template-columns:1fr 1fr}
+  .a4-sheet{width:100%;min-height:auto;padding:16px 12px;font-size:11pt}
+  .modal{max-width:100%;max-height:90vh}
+  .vocab-emoji{font-size:60px}
+  .vocab-emoji-card{width:90px;height:90px;font-size:48px}
+  .vocab-word{font-size:22px}
+  .vocab-option-card{font-size:32px;padding:12px 6px}
+  .spell-inline-container{font-size:26px}
+  .letter-box{font-size:22px;padding:6px 8px;min-width:32px}
+  .syllable-box{font-size:18px;padding:6px 10px}
+  .spell-blank-input{font-size:26px;min-width:34px}
+  .data-table th{font-size:10px;padding:6px 4px;white-space:nowrap}
+  .data-table td{font-size:11px;padding:6px 4px;white-space:nowrap}
+  .day-card .day-type{font-size:10px;white-space:nowrap}
+  .day-card .day-modules{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .stat-box .label{font-size:10px}
+  .q-option{font-size:12px;padding:10px 8px}
+  .tab-bar{padding:6px 8px}
+  .tab-bar button{font-size:12px;padding:6px 10px}
+  .writing-essay{font-size:14px;padding:14px}
+  .module-body{padding:12px}
+  .login-box-compact{padding:16px 14px;max-width:340px}
+  .login-page{padding:8px}
+  .speak-sentence{font-size:17px}
+  .speaking-card{padding:14px}
+}
+
+/* Misc */
+.text-center{text-align:center}
+.text-sub{color:var(--text-sub)}
+.mt-8{margin-top:8px}.mt-16{margin-top:16px}
+.mb-8{margin-bottom:8px}.mb-16{margin-bottom:16px}
+.flex{display:flex}.flex-between{display:flex;justify-content:space-between;align-items:center}
+.fw-700{font-weight:700}
+.fs-12{font-size:12px}
+.gap-8{gap:8px}
+.hidden{display:none!important}
+.progress-bar{height:8px;background:var(--bg);border-radius:4px;overflow:hidden}
+.progress-bar .fill{height:100%;background:var(--primary);border-radius:4px;transition:.3s}
+.rabbit-logo{font-size:20px}
+
+/* Audio enable banner */
+.audio-enable-banner{background:linear-gradient(135deg,#FF8C42,#FF6B35);color:#fff;padding:16px;border-radius:var(--radius);text-align:center;margin-bottom:16px;box-shadow:var(--shadow-lg)}
+.audio-enable-banner .ae-icon{font-size:40px;margin-bottom:8px}
+.audio-enable-banner .ae-title{font-size:16px;font-weight:700;margin-bottom:4px}
+.audio-enable-banner .ae-desc{font-size:13px;opacity:.9;margin-bottom:12px}
+.audio-enable-banner .ae-btn{background:#fff;color:var(--primary);padding:10px 24px;border-radius:24px;font-size:15px;font-weight:700;border:none;cursor:pointer}
+
+/* Speaking animation */
+.speaking-anim{display:inline-block;animation:pulse 1s ease-in-out infinite}
+@keyframes pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.2);opacity:.7}}
+
+/* Recording indicator */
+.recording-indicator{position:relative;display:inline-flex;align-items:center;justify-content:center;width:80px;height:80px;margin:8px auto}
+.rec-mic{font-size:40px;z-index:2;animation:micBounce 1s ease-in-out infinite}
+.rec-pulse{position:absolute;width:80px;height:80px;border-radius:50%;background:rgba(255,77,79,.3);animation:recPulse 1.5s ease-out infinite}
+@keyframes micBounce{0%,100%{transform:scale(1)}50%{transform:scale(1.15)}}
+@keyframes recPulse{0%{transform:scale(0.8);opacity:0.8}100%{transform:scale(1.6);opacity:0}}
+.rec-timer{font-size:14px;color:var(--primary);font-weight:600;margin-top:8px}
+
+/* Letter read */
+.letter-read-container{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin:16px 0}
+.letter-box{font-size:28px;font-weight:700;padding:8px 12px;border:2px solid #FFE0CC;border-radius:10px;transition:.3s;background:var(--card);color:var(--text);min-width:40px;text-align:center}
+.letter-box.active{background:var(--primary);color:#fff;border-color:var(--primary);transform:scale(1.15);box-shadow:0 4px 12px rgba(255,140,66,.3)}
+.letter-box.done{background:var(--success-light);border-color:var(--success);color:var(--success)}
+
+/* Syllable blend */
+.syllable-container{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:16px 0;align-items:center}
+.syllable-box{font-size:22px;font-weight:600;padding:10px 14px;border:2px solid #FFE0CC;border-radius:10px;transition:.3s;background:var(--card);color:var(--text);text-align:center}
+.syllable-box.active{background:var(--primary);color:#fff;border-color:var(--primary);transform:scale(1.15);box-shadow:0 4px 12px rgba(255,140,66,.3)}
+.syllable-box.done{background:var(--success-light);border-color:var(--success);color:var(--success)}
+.syllable-sep{font-size:20px;color:var(--text-sub);font-weight:700}
+
+/* Vocab step labels */
+.vocab-step-label{font-size:13px;color:var(--primary);font-weight:600;margin-bottom:8px;padding:4px 12px;background:var(--primary-light);border-radius:12px;display:inline-block}
+@keyframes celebrate{0%{transform:translate(-50%,-50%) scale(0) rotate(0deg);opacity:0}30%{transform:translate(-50%,-50%) scale(1.3) rotate(15deg);opacity:1}60%{transform:translate(-50%,-80%) scale(1) rotate(-10deg);opacity:1}100%{transform:translate(-50%,-120%) scale(0.5) rotate(0deg);opacity:0}}
+
+/* Vocab game enhanced */
+.vocab-stage{position:relative;overflow:visible}
+.vocab-emoji-card{display:inline-flex;align-items:center;justify-content:center;width:120px;height:120px;border-radius:24px;font-size:64px;margin:0 auto 12px;background:linear-gradient(135deg,#FFF5EB,#FFE8D6);box-shadow:0 4px 16px rgba(255,140,66,.2);animation:bounceIn .5s ease}.vocab-option-card{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:16px 8px;border:2px solid #FFE0CC;border-radius:var(--radius-sm);font-size:40px;cursor:pointer;transition:.2s;background:var(--card)}
+.vocab-option-card:hover{border-color:var(--primary);background:var(--primary-light);transform:translateY(-2px)}
+.vocab-option-card.correct{border-color:var(--success);background:var(--success-light);animation:pop .3s ease}
+.vocab-option-card.wrong{border-color:var(--warning);background:var(--warning-light);opacity:0.5;animation:shake .3s ease}
+.vocab-option-card.clickable-correct{cursor:pointer;animation:pop .4s ease;box-shadow:0 0 0 3px rgba(82,196,26,.3)}
+.vocab-option-card.clickable-correct:hover{transform:scale(1.05);box-shadow:0 0 0 4px rgba(82,196,26,.5)}
+.vocab-option-card .opt-label{font-size:12px;color:var(--text-sub);font-weight:600}
+@keyframes bounceIn{0%{transform:scale(0);opacity:0}60%{transform:scale(1.1);opacity:1}100%{transform:scale(1)}}
+@keyframes pop{0%{transform:scale(1)}50%{transform:scale(1.15)}100%{transform:scale(1)}}
+@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+/* Auto-read indicator */
+.auto-read-badge{display:inline-flex;align-items:center;gap:4px;background:var(--info-light);color:var(--info);padding:3px 10px;border-radius:12px;font-size:11px;margin-bottom:8px}
+.auto-read-badge.speaking{background:var(--success-light);color:var(--success)}
+.auto-read-badge.speaking .speaking-anim{animation:pulse .6s ease-in-out infinite}
+
+/* Vocab completion screen */
+.vocab-complete{padding:20px 8px}
+.vocab-complete .vc-title{font-size:22px;font-weight:700;color:var(--primary-dark);margin-bottom:4px}
+.vocab-complete .vc-score{font-size:16px;color:var(--text);margin-bottom:16px}
+.vocab-complete .vc-stars{font-size:28px;margin-bottom:16px}
+.vocab-complete .vc-word-list{display:flex;flex-direction:column;gap:8px;margin-bottom:16px}
+.vocab-complete .vc-word-item{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--primary-light);border-radius:10px}
+.vocab-complete .vc-word-item .vcw-emoji{font-size:28px}
+.vocab-complete .vc-word-item .vcw-info{flex:1;text-align:left}
+.vocab-complete .vc-word-item .vcw-word{font-size:16px;font-weight:700;color:var(--primary-dark)}
+.vocab-complete .vc-word-item .vcw-meaning{font-size:13px;color:var(--text-sub)}
+
+/* Student read mode (letter_read & syllable_blend) */
+.read-instruction{background:var(--info-light);color:var(--info);padding:8px 14px;border-radius:10px;font-size:13px;margin-bottom:12px}
+.letter-box.student-read{cursor:pointer}
+.letter-box.student-read:hover{border-color:var(--primary);background:var(--primary-light)}
+.letter-box.reading{background:var(--accent);color:#fff;border-color:var(--accent);transform:scale(1.2);box-shadow:0 4px 16px rgba(255,107,157,.4);animation:pulse .8s ease-in-out infinite}
+.letter-box.read-done{background:var(--success-light);border-color:var(--success);color:var(--success)}
+.syllable-box.student-read{cursor:pointer}
+.syllable-box.student-read:hover{border-color:var(--primary);background:var(--primary-light)}
+.syllable-box.reading{background:var(--accent);color:#fff;border-color:var(--accent);transform:scale(1.2);box-shadow:0 4px 16px rgba(255,107,157,.4);animation:pulse .8s ease-in-out infinite}
+.syllable-box.read-done{background:var(--success-light);border-color:var(--success);color:var(--success)}
+.read-round-badge{font-size:12px;color:var(--primary);font-weight:600;margin:8px 0}
+.self-eval-bar{display:flex;gap:8px;justify-content:center;margin-top:12px}
+.self-eval-btn{padding:8px 16px;border-radius:20px;border:2px solid #FFE0CC;font-size:14px;cursor:pointer;background:var(--card);transition:.2s}
+.self-eval-btn:hover{border-color:var(--primary);background:var(--primary-light)}
+.self-eval-btn.good{background:var(--success-light);border-color:var(--success);color:var(--success)}
+.self-eval-btn.ok{background:var(--warning-light);border-color:var(--warning);color:var(--warning)}
+.self-eval-btn.practice{background:var(--danger-light);border-color:var(--danger);color:var(--danger)}
+
+/* Letter reading recording */
+.letter-rec-area{text-align:center;margin-top:12px;padding:16px;background:var(--card);border-radius:14px;border:2px solid var(--accent)}
+.letter-rec-mic{display:inline-flex;align-items:center;justify-content:center;width:64px;height:64px;border-radius:50%;background:var(--accent);font-size:30px;animation:pulse 1s ease-in-out infinite;box-shadow:0 0 20px rgba(255,107,157,.3)}
+.letter-rec-label{font-size:14px;font-weight:600;color:var(--accent);margin:10px 0 4px}
+.letter-rec-hint{font-size:12px;color:var(--text-sub)}
+.rec-timer{font-size:24px;font-weight:800;color:var(--accent);margin:6px 0}
+.rec-wave{width:100%;max-width:200px;height:8px;background:#f0e0d0;border-radius:4px;margin:8px auto;overflow:hidden}
+.rec-wave-bar{height:100%;background:linear-gradient(90deg,var(--accent),var(--primary));border-radius:4px;transition:width .1s}
+.letter-score-badge{display:inline-block;padding:4px 12px;border-radius:12px;font-size:13px;font-weight:600;margin:4px 0}
+.letter-score-badge.pass{background:var(--success-light);color:var(--success)}
+.letter-score-badge.fail{background:var(--danger-light);color:var(--danger)}
+.letter-comprehensive{background:linear-gradient(135deg,var(--primary-light),#FFF9E6);border-radius:14px;padding:16px;margin:12px 0;text-align:center}
+.letter-comprehensive .lc-score{font-size:36px;font-weight:800;color:var(--primary)}
+.letter-comprehensive .lc-label{font-size:13px;color:var(--text-sub);margin-top:4px}
+.letter-comprehensive .lc-stars{font-size:18px;margin:8px 0}
+.letter-detail-row{display:flex;justify-content:space-between;align-items:center;padding:6px 12px;border-bottom:1px solid #f0e0d0;font-size:13px}
+.letter-detail-row .ldr-letter{font-weight:700;color:var(--primary-dark);font-size:16px;width:28px}
+.letter-detail-row .ldr-score{font-weight:600}
+.letter-retry-btn{background:var(--accent);color:#fff;border:none;border-radius:20px;padding:8px 20px;font-size:14px;cursor:pointer;margin-top:8px}
+
+/* Review screen */
+.vocab-review{padding:16px 8px}
+.vocab-review .vr-title{font-size:18px;font-weight:700;color:var(--primary-dark);margin-bottom:4px}
+.vocab-review .vr-sub{font-size:13px;color:var(--text-sub);margin-bottom:16px}
+.vocab-review .vr-word-item{display:flex;align-items:center;gap:10px;padding:12px;background:var(--primary-light);border-radius:10px;margin-bottom:8px}
+.vocab-review .vr-word-item .vrw-emoji{font-size:32px}
+.vocab-review .vr-word-item .vrw-info{flex:1;text-align:left}
+.vocab-review .vr-word-item .vrw-word{font-size:16px;font-weight:700;color:var(--primary-dark)}
+.vocab-review .vr-word-item .vrw-meaning{font-size:13px;color:var(--text-sub)}
+.vocab-review .vr-word-item .vrw-play{background:var(--primary);color:#fff;border:none;border-radius:50%;width:32px;height:32px;font-size:14px;cursor:pointer;flex-shrink:0}
+
+/* Pending student badge */
+.badge-pending{background:var(--warning-light);color:var(--warning)}
+.badge-assigned{background:var(--success-light);color:var(--success)}
+
+/* Student assign card */
+.assign-card{background:var(--card);border-radius:var(--radius);padding:12px;box-shadow:var(--shadow);margin-bottom:8px;border-left:4px solid var(--warning)}
+.assign-card.approved{border-left-color:var(--success)}
+.assign-card .ac-info{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+.assign-card .ac-name{font-weight:600;font-size:14px}
+.assign-card .ac-phone{font-size:12px;color:var(--text-sub)}
+.assign-card .ac-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+
+/* Cloud status */
+.cloud-status{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 8px;border-radius:10px}
+.cloud-status.on{background:var(--success-light);color:var(--success)}
+.cloud-status.off{background:var(--danger-light);color:var(--danger)}
+
+/* Settings form */
+.settings-card{background:var(--card);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow);margin-bottom:12px}
+.settings-card .sc-title{font-size:15px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.settings-card .sc-desc{font-size:12px;color:var(--text-sub);margin-bottom:12px}
+.settings-steps{background:var(--bg);border-radius:var(--radius-sm);padding:12px;font-size:12px;color:var(--text);line-height:2}
+.settings-steps code{background:var(--primary-light);padding:2px 6px;border-radius:4px;font-size:11px;color:var(--primary-dark)}
+</style>
+</head>
+<body>
+
+<!-- PWA Install Banner -->
+<div id="pwa-install-banner" style="display:none;position:fixed;bottom:0;left:0;right:0;background:var(--primary);color:#fff;padding:10px 12px;align-items:center;gap:10px;z-index:9999;box-shadow:0 -2px 8px rgba(0,0,0,.15)">
+  <span style="font-size:20px">📱</span>
+  <div style="flex:1">
+    <div style="font-size:13px;font-weight:600">添加到桌面</div>
+    <div style="font-size:11px;opacity:.9">像APP一样使用，更方便</div>
+  </div>
+  <button onclick="triggerPWAInstall()" style="background:#fff;color:var(--primary);border:none;padding:7px 14px;border-radius:18px;font-weight:600;font-size:12px">安装</button>
+  <button onclick="dismissInstallBanner()" style="background:transparent;color:#fff;border:none;font-size:18px;padding:4px">&times;</button>
+</div>
+
+<!-- Persistent TTS audio element (more reliable than new Audio() on mobile) -->
+<audio id="tts-player" preload="auto" playsinline webkit-playsinline="true"></audio>
+
+<!-- Login Page -->
+<div id="login-page" class="login-page">
+  <div class="login-box login-box-compact">
+    <div class="rabbit" style="margin-bottom:4px"><svg width="56" height="56" viewBox="0 0 100 100"><defs><linearGradient id="lg2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFE5CC"/><stop offset="1" stop-color="#FFB380"/></linearGradient></defs><g><ellipse cx="35" cy="22" rx="8" ry="17" fill="url(#lg2)" transform="rotate(-22 35 22)"/><ellipse cx="36" cy="24" rx="4" ry="11" fill="#FFB6C1" transform="rotate(-22 36 24)" opacity="0.85"/><animateTransform attributeName="transform" type="rotate" values="0 35 8;-5 35 8;0 35 8" dur="3s" repeatCount="indefinite"/></g><g><ellipse cx="65" cy="18" rx="8" ry="17" fill="url(#lg2)" transform="rotate(8 65 18)"/><ellipse cx="65" cy="20" rx="4" ry="11" fill="#FFB6C1" transform="rotate(8 65 20)" opacity="0.85"/><animateTransform attributeName="transform" type="rotate" values="0 65 8;5 65 8;0 65 8" dur="3s" begin="0.5s" repeatCount="indefinite"/></g><circle cx="27" cy="11" r="3.5" fill="#FF6B9D"/><circle cx="27" cy="11" r="1.5" fill="#FFD700"/><ellipse cx="50" cy="55" rx="31" ry="27" fill="url(#lg2)"/><ellipse cx="26" cy="60" rx="6" ry="4" fill="#FF9FB5" opacity="0.5"/><ellipse cx="74" cy="60" rx="6" ry="4" fill="#FF9FB5" opacity="0.5"/><ellipse cx="37" cy="50" rx="7" ry="8" fill="#3D2E1F"/><circle cx="39" cy="47" r="3" fill="#fff"/><circle cx="35" cy="53" r="1.8" fill="#fff" opacity="0.5"/><ellipse cx="63" cy="50" rx="7" ry="8" fill="#3D2E1F"/><circle cx="65" cy="47" r="3" fill="#fff"/><circle cx="61" cy="53" r="1.8" fill="#fff" opacity="0.5"/><path d="M50 58 C46 55 42 57 42 60 C42 63 50 67 50 67 C50 67 58 63 58 60 C58 57 54 55 50 58 Z" fill="#FF6B9D"/><path d="M50 67 L50 69" stroke="#3D2E1F" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M50 69 Q45 72 41 70" stroke="#3D2E1F" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M50 69 Q55 72 59 70" stroke="#3D2E1F" stroke-width="2" fill="none" stroke-linecap="round"/><ellipse cx="50" cy="71" rx="1.8" ry="1.3" fill="#FF6B9D" opacity="0.7"/></svg></div>
+    <h2 style="font-size:18px;margin-bottom:2px">Amy老师英语打卡</h2>
+    <p class="subtitle" style="font-size:12px;margin-bottom:14px">登录打卡，每天进步一点点</p>
+    <div class="form-group" style="margin-bottom:10px">
+      <label style="font-size:11px">手机号</label>
+      <input type="tel" id="login-phone" placeholder="请输入11位手机号" maxlength="11" style="padding:9px 12px;font-size:14px">
+    </div>
+    <div class="form-group" style="margin-bottom:8px">
+      <label style="font-size:11px">备注名（中文名-英文名）</label>
+      <input type="text" id="login-name" placeholder="如：马慧-Amy" oninput="App.checkNameFormat()" style="padding:9px 12px;font-size:14px">
+      <div id="name-hint" style="font-size:10px;margin-top:2px;color:var(--text-sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">格式：中文名(2-4字)-英文名(2-20字母)，如：马慧-Amy</div>
+    </div>
+    <button class="login-btn" style="padding:11px;font-size:15px;margin-top:4px" onclick="App.login()">登录</button>
+    <p class="login-hint" style="color:var(--danger);display:none" id="name-error">⚠️ 备注名格式不正确！</p>
+    <p class="login-hint" style="margin-top:2px;font-size:11px">登录后由老师分配班级</p>
+    <div style="margin-top:10px;padding:8px 10px;background:var(--primary-light);border-radius:8px;font-size:11px;color:var(--text-sub);line-height:1.6">
+      <span style="white-space:nowrap">📱 <strong>添加到桌面</strong>：微信内先点 <strong>···</strong> → <strong>在浏览器中打开</strong></span><br>
+      <span style="white-space:nowrap">iPhone：Safari → 分享 → 添加到主屏幕</span><br>
+      <span style="white-space:nowrap">Android：浏览器菜单 → 添加到主屏幕</span>
+    </div>
+  </div>
+</div>
+
+<!-- Waiting Page (for unapproved students) -->
+<div id="waiting-page" class="login-page hidden">
+  <div class="login-box">
+    <div class="rabbit"><svg width="56" height="56" viewBox="0 0 100 100"><defs><linearGradient id="wg2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFE5CC"/><stop offset="1" stop-color="#FFB380"/></linearGradient></defs><g><ellipse cx="35" cy="22" rx="8" ry="17" fill="url(#wg2)" transform="rotate(-22 35 22)"/><ellipse cx="36" cy="24" rx="4" ry="11" fill="#FFB6C1" transform="rotate(-22 36 24)" opacity="0.85"/><animateTransform attributeName="transform" type="rotate" values="0 35 8;-5 35 8;0 35 8" dur="3s" repeatCount="indefinite"/></g><g><ellipse cx="65" cy="18" rx="8" ry="17" fill="url(#wg2)" transform="rotate(8 65 18)"/><ellipse cx="65" cy="20" rx="4" ry="11" fill="#FFB6C1" transform="rotate(8 65 20)" opacity="0.85"/><animateTransform attributeName="transform" type="rotate" values="0 65 8;5 65 8;0 65 8" dur="3s" begin="0.5s" repeatCount="indefinite"/></g><circle cx="27" cy="11" r="3.5" fill="#FF6B9D"/><circle cx="27" cy="11" r="1.5" fill="#FFD700"/><ellipse cx="50" cy="55" rx="31" ry="27" fill="url(#wg2)"/><ellipse cx="26" cy="60" rx="6" ry="4" fill="#FF9FB5" opacity="0.5"/><ellipse cx="74" cy="60" rx="6" ry="4" fill="#FF9FB5" opacity="0.5"/><ellipse cx="37" cy="50" rx="7" ry="8" fill="#3D2E1F"/><circle cx="39" cy="47" r="3" fill="#fff"/><circle cx="35" cy="53" r="1.8" fill="#fff" opacity="0.5"/><ellipse cx="63" cy="50" rx="7" ry="8" fill="#3D2E1F"/><circle cx="65" cy="47" r="3" fill="#fff"/><circle cx="61" cy="53" r="1.8" fill="#fff" opacity="0.5"/><path d="M50 58 C46 55 42 57 42 60 C42 63 50 67 50 67 C50 67 58 63 58 60 C58 57 54 55 50 58 Z" fill="#FF6B9D"/><path d="M50 67 L50 69" stroke="#3D2E1F" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M50 69 Q45 72 41 70" stroke="#3D2E1F" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M50 69 Q55 72 59 70" stroke="#3D2E1F" stroke-width="2" fill="none" stroke-linecap="round"/><ellipse cx="50" cy="71" rx="1.8" ry="1.3" fill="#FF6B9D" opacity="0.7"/></svg></div>
+    <h2>等待老师审核</h2>
+    <p class="subtitle">你的注册信息已提交</p>
+    <div class="card" style="background:var(--warning-light);text-align:center;padding:20px;margin:16px 0">
+      <div style="font-size:48px;margin-bottom:8px">⏳</div>
+      <p style="font-size:15px;color:var(--warning);font-weight:600">老师正在审核你的注册</p>
+      <p class="text-sub fs-12 mt-8">审核通过后，老师会为你分配班级</p>
+      <p class="text-sub fs-12">请稍后再登录查看</p>
+    </div>
+    <button class="login-btn" onclick="App.logout()">返回登录</button>
+  </div>
+</div>
+
+<!-- WeChat Notice -->
+<div id="wechat-notice" class="hidden" style="position:fixed;top:0;left:0;right:0;z-index:9999;background:#FF4D4F;color:#fff;padding:16px;font-size:13px;display:none;flex-direction:column;gap:8px;box-shadow:0 2px 8px rgba(0,0,0,.3)">
+  <div style="display:flex;align-items:center;gap:8px">
+    <span style="font-size:24px">⚠️</span>
+    <span style="font-weight:600;font-size:14px">微信内无法播放语音和添加桌面</span>
+    <button onclick="document.getElementById('wechat-notice').style.display='none'" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;padding:4px 8px;border-radius:4px;font-size:16px">&times;</button>
+  </div>
+  <div style="font-size:12px;line-height:1.8;padding-left:32px">
+    请点击右上角 <strong style="font-size:16px">···</strong> → 选择 <strong>"在浏览器中打开"</strong><br>
+    在浏览器中才能正常播放英语朗读和添加到桌面
+  </div>
+
+</div>
+<div id="main-app" class="hidden">
+  <header class="app-header">
+    <div class="logo"><span class="icon rabbit-icon"><svg width="28" height="28" viewBox="0 0 100 100"><defs><linearGradient id="hg2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFE5CC"/><stop offset="1" stop-color="#FFB380"/></linearGradient></defs><g><ellipse cx="35" cy="22" rx="8" ry="17" fill="url(#hg2)" transform="rotate(-22 35 22)"/><ellipse cx="36" cy="24" rx="4" ry="11" fill="#FFB6C1" transform="rotate(-22 36 24)" opacity="0.85"/><animateTransform attributeName="transform" type="rotate" values="0 35 8;-5 35 8;0 35 8" dur="3s" repeatCount="indefinite"/></g><g><ellipse cx="65" cy="18" rx="8" ry="17" fill="url(#hg2)" transform="rotate(8 65 18)"/><ellipse cx="65" cy="20" rx="4" ry="11" fill="#FFB6C1" transform="rotate(8 65 20)" opacity="0.85"/><animateTransform attributeName="transform" type="rotate" values="0 65 8;5 65 8;0 65 8" dur="3s" begin="0.5s" repeatCount="indefinite"/></g><circle cx="27" cy="11" r="3.5" fill="#FF6B9D"/><circle cx="27" cy="11" r="1.5" fill="#FFD700"/><ellipse cx="50" cy="55" rx="31" ry="27" fill="url(#hg2)"/><ellipse cx="26" cy="60" rx="6" ry="4" fill="#FF9FB5" opacity="0.5"/><ellipse cx="74" cy="60" rx="6" ry="4" fill="#FF9FB5" opacity="0.5"/><ellipse cx="37" cy="50" rx="7" ry="8" fill="#3D2E1F"/><circle cx="39" cy="47" r="3" fill="#fff"/><circle cx="35" cy="53" r="1.8" fill="#fff" opacity="0.5"/><ellipse cx="63" cy="50" rx="7" ry="8" fill="#3D2E1F"/><circle cx="65" cy="47" r="3" fill="#fff"/><circle cx="61" cy="53" r="1.8" fill="#fff" opacity="0.5"/><path d="M50 58 C46 55 42 57 42 60 C42 63 50 67 50 67 C50 67 58 63 58 60 C58 57 54 55 50 58 Z" fill="#FF6B9D"/><path d="M50 67 L50 69" stroke="#3D2E1F" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M50 69 Q45 72 41 70" stroke="#3D2E1F" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M50 69 Q55 72 59 70" stroke="#3D2E1F" stroke-width="2" fill="none" stroke-linecap="round"/><ellipse cx="50" cy="71" rx="1.8" ry="1.3" fill="#FF6B9D" opacity="0.7"/></svg></span><span id="header-name" style="font-size:14px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Amy老师英语打卡</span></div>
+    <div class="header-right">
+      <span class="class-badge" id="class-badge"></span>
+      <button class="invite-btn" id="invite-btn-header" onclick="App.showInvite()">🔗 邀请</button>
+      <button class="invite-btn" id="settings-btn-header" onclick="App.showSettings()">⚙️ 设置</button>
+      <button class="invite-btn" onclick="App.logout()">退出</button>
+    </div>
+  </header>
+
+  <div class="tab-bar" id="tab-bar"></div>
+  <div class="content-area" id="content-area"></div>
+</div>
+
+<!-- Modal -->
+<div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)App.closeModal()">
+  <div class="modal" id="modal-box"></div>
+</div>
+
+<script src="cloud.js?v=21"></script>
+<script src="data.js?v=21"></script>
+<script src="app.js?v=21"></script>
+<script>
+// Register Service Worker for PWA
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function() {
+    navigator.serviceWorker.register('sw.js').then(function(reg) {
+      console.log('SW registered');
+      // Check for a new SW version every time the page loads
+      if (reg.update) { reg.update().catch(function(){}); }
+      // When a new SW takes control, reload ONCE so the fresh code is used
+      var reloaded = false;
+      navigator.serviceWorker.addEventListener('controllerchange', function() {
+        if (reloaded) return;
+        reloaded = true;
+        window.location.reload();
+      });
+    }).catch(function(err) {
+      console.warn('SW registration failed:', err);
+    });
+  });
+}
+
+// PWA install prompt
+var deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', function(e) {
+  e.preventDefault();
+  deferredPrompt = e;
+  showInstallBanner();
+});
+
+function showInstallBanner() {
+  if (!deferredPrompt) return;
+  var banner = document.getElementById('pwa-install-banner');
+  if (banner) banner.style.display = 'flex';
+}
+
+function dismissInstallBanner() {
+  var banner = document.getElementById('pwa-install-banner');
+  if (banner) banner.style.display = 'none';
+}
+
+function triggerPWAInstall() {
+  if (!deferredPrompt) return;
+  deferredPrompt.prompt();
+  deferredPrompt.userChoice.then(function() {
+    deferredPrompt = null;
+    dismissInstallBanner();
+  });
+}
+</script>
+</body>
+</html>

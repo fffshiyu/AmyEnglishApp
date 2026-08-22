@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>英语作业打卡系统</title>
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="apple-touch-icon" href="icon.svg">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:linear-gradient(135deg,#FFF0F5,#fce4f0)}
+.launcher{text-align:center;padding:40px}
+.launcher svg{width:120px;height:120px;filter:drop-shadow(0 10px 30px rgba(232,93,157,.3));animation:bounce 2s ease-in-out infinite}
+@keyframes bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+.launcher h1{font-size:24px;color:#c4477e;margin-top:20px}
+.launcher p{font-size:14px;color:#999;margin-top:8px}
+.launcher button{margin-top:24px;padding:14px 40px;background:#e85d9d;color:#fff;border:none;border-radius:12px;font-size:16px;font-weight:600;cursor:pointer;transition:.2s;box-shadow:0 4px 15px rgba(232,93,157,.3)}
+.launcher button:hover{background:#c4477e;transform:translateY(-2px)}
+</style>
+</head>
+<body>
+<div class="launcher">
+  <svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+    <rect x="16" y="16" width="480" height="480" rx="120" ry="120" fill="#FFF0F5" stroke="#FFB6C1" stroke-width="4"/>
+    <ellipse cx="180" cy="130" rx="50" ry="95" fill="#FFB6C1" transform="rotate(-18 180 130)"/>
+    <ellipse cx="180" cy="135" rx="30" ry="70" fill="#FFC0CB" transform="rotate(-18 180 135)"/>
+    <ellipse cx="332" cy="130" rx="50" ry="95" fill="#FFB6C1" transform="rotate(18 332 130)"/>
+    <ellipse cx="332" cy="135" rx="30" ry="70" fill="#FFC0CB" transform="rotate(18 332 135)"/>
+    <ellipse cx="256" cy="280" rx="170" ry="155" fill="#FFB6C1"/>
+    <circle cx="150" cy="310" r="28" fill="#FF9FB5" opacity="0.5"/>
+    <circle cx="362" cy="310" r="28" fill="#FF9FB5" opacity="0.5"/>
+    <ellipse cx="200" cy="260" rx="22" ry="26" fill="#2D2D2D"/>
+    <circle cx="207" cy="252" r="8" fill="#FFFFFF"/>
+    <ellipse cx="312" cy="260" rx="22" ry="26" fill="#2D2D2D"/>
+    <circle cx="319" cy="252" r="8" fill="#FFFFFF"/>
+    <ellipse cx="256" cy="310" rx="16" ry="12" fill="#FF69B4"/>
+    <path d="M 256 322 L 256 340" stroke="#FF69B4" stroke-width="3" fill="none" stroke-linecap="round"/>
+    <path d="M 256 340 Q 230 360 210 345" stroke="#FF69B4" stroke-width="3" fill="none" stroke-linecap="round"/>
+    <path d="M 256 340 Q 282 360 302 345" stroke="#FF69B4" stroke-width="3" fill="none" stroke-linecap="round"/>
+  </svg>
+  <h1>英语作业打卡系统</h1>
+  <p>Grade 4-6 English Class</p>
+  <button onclick="location.href='index.html'">打开应用</button>
+</div>
+</body>
+</html>

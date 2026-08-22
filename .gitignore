@@ -1,0 +1,15 @@
+# WorkBuddy internal
+.workbuddy/
+
+# Temp files
+*.tmp
+
+# Deploy directory (deployment copy)
+deploy/
+
+# Node
+node_modules/
+
+# OS files
+Thumbs.db
+.DS_Store

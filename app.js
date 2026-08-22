@@ -1,0 +1,3587 @@
+/* eslint-disable */
+const TEACHER_PHONE = '13259532991';
+const App = {
+  state: {
+    role: 'teacher',
+    userName: '',
+    phone: '',
+    className: '',
+    currentDay: 0,
+    currentTab: 'weekly',
+    currentModule: null,
+    vocabStage: 0,
+    vocabWordIdx: 0,
+    vocabScore: 0,
+    selectedVoice: 'female',
+    answers: {},
+    checkins: {},
+    errorBook: [],
+    students: [],
+    parentStudents: {},
+    classes: [],
+    audioEnabled: false,
+    voices: [],
+    cloudStudents: {},
+  },
+
+  init() {
+    this.loadData();
+    this.loadVoices();
+    if (typeof Cloud !== 'undefined') Cloud.init();
+    // WeChat built-in browser: unlock audio as soon as WeixinJSBridge is
+    // ready. On WeChat, the first play() must happen inside this callback
+    // or a user gesture — this covers the "opened app but never tapped"
+    // case on WeChat.
+    this._setupWeChatAudioUnlock();
+    // Show WeChat notice if in WeChat
+    if (this.isWeChat()) {
+      const notice = document.getElementById('wechat-notice');
+      if (notice) notice.style.display = 'flex';
+    }
+    // Auto-login if saved credentials exist
+    this.tryAutoLogin();
+  },
+
+  // Unlock the audio element when WeixinJSBridge becomes available
+  _setupWeChatAudioUnlock() {
+    var self = this;
+    if (typeof WeixinJSBridge === 'undefined') {
+      document.addEventListener('WeixinJSBridgeReady', function() {
+        self._unlockAudioElement();
+      }, false);
+    } else {
+      self._unlockAudioElement();
+    }
+  },
+
+  // Play the inline silent WAV once to unlock the persistent audio element
+  _unlockAudioElement() {
+    try {
+      var el = document.getElementById('tts-player');
+      if (el && !this._ttsUnlocked) {
+        el.src = this.SILENT_WAV;
+        el.volume = 0;
+        var p = el.play();
+        if (p && p.then) { p.then(function() { el.volume = 1; }).catch(function() { el.volume = 1; }); }
+      }
+    } catch(e) {}
+  },
+
+  // Auto-login from saved credentials
+  tryAutoLogin() {
+    try {
+      const saved = localStorage.getItem('amy_saved_login');
+      if (saved) {
+        const creds = JSON.parse(saved);
+        if (creds.phone && creds.name) {
+          // Fill in the form fields (in case auto-login needs to show them)
+          const phoneInput = document.getElementById('login-phone');
+          const nameInput = document.getElementById('login-name');
+          if (phoneInput) phoneInput.value = creds.phone;
+          if (nameInput) nameInput.value = creds.name;
+          // Auto-login
+          this.state.phone = creds.phone;
+          this.state.userName = creds.name;
+          // Keep audioEnabled=false until user interacts (browser requires
+          // a user gesture to unlock audio). The render functions will show
+          // a "开启语音" banner; when the user taps it or taps anywhere on
+          // screen, _setupAudioUnlock fires, sets audioEnabled=true, and
+          // re-renders so auto-speak works.
+          this.state.audioEnabled = false;
+          this._ttsUnlocked = false;
+          this.loadVoices();
+          // Add one-time listener to unlock audio on first interaction
+          this._setupAudioUnlock();
+          if (creds.phone === TEACHER_PHONE) {
+            this.state.role = 'teacher';
+            this.state.className = '';
+            this.saveData();
+            this.showApp();
+          } else {
+            this.state.role = 'user';
+            this.registerStudent(creds.phone, creds.name);
+          }
+        }
+      }
+    } catch(e) { console.warn('Auto login error:', e); }
+  },
+
+  // Setup one-time audio unlock on first user interaction (for auto-login case)
+  _setupAudioUnlock() {
+    if (this._ttsUnlocked) return;
+    var self = this;
+    var unlockHandler = function() {
+      if (self._ttsUnlocked) return;
+      self._ttsUnlocked = true;
+      self.state.audioEnabled = true;
+      // Unlock Web Audio API context (for sound effects)
+      var ctx = self._getAudioCtx();
+      if (ctx && ctx.state === 'suspended') { ctx.resume(); }
+      // Unlock the persistent audio element within user gesture
+      // Only do this if nothing is currently playing (avoid interrupting ongoing TTS)
+      // Uses an inline silent WAV (no network dependency) for maximum reliability.
+      var audioEl = document.getElementById('tts-player');
+      if (audioEl && !self._currentAudio) {
+        audioEl.src = self.SILENT_WAV;
+        audioEl.volume = 0;
+        var p = audioEl.play();
+        if (p && p.then) {
+          p.then(function() { audioEl.volume = 1; }).catch(function() { audioEl.volume = 1; });
+        }
+      }
+      // Remove listeners
+      document.removeEventListener('touchstart', unlockHandler);
+      document.removeEventListener('click', unlockHandler);
+      // Re-render content so auto-speak can now work with unlocked audio
+      if (self.state.phone) {
+        self.renderContent();
+      }
+    };
+    document.addEventListener('touchstart', unlockHandler, { once: false, passive: true });
+    document.addEventListener('click', unlockHandler, { once: false });
+  },
+
+  // ===== Data =====
+  loadData() {
+    try {
+      const saved = localStorage.getItem('eng_hw_v6');
+      if (saved) {
+        const d = JSON.parse(saved);
+        this.state.answers = d.answers || {};
+        this.state.checkins = d.checkins || {};
+        this.state.errorBook = d.errorBook || [];
+        this.state.students = d.students || [];
+        this.state.parentStudents = d.parentStudents || {};
+        this.state.classes = d.classes || [];
+      }
+      // Migrate from v5 if v6 empty
+      if (this.state.students.length === 0) {
+        const v5 = localStorage.getItem('eng_hw_v5');
+        if (v5) {
+          const d5 = JSON.parse(v5);
+          this.state.students = d5.students || [];
+          this.state.checkins = d5.checkins || {};
+          this.state.parentStudents = d5.parentStudents || {};
+          this.state.classes = d5.classes || [];
+        }
+      }
+      // Migrate from v4
+      if (this.state.students.length === 0) {
+        const v4 = localStorage.getItem('eng_hw_v4');
+        if (v4) {
+          const d4 = JSON.parse(v4);
+          this.state.students = d4.students || [];
+          this.state.checkins = d4.checkins || {};
+          this.state.parentStudents = d4.parentStudents || {};
+          this.state.classes = d4.classes || [];
+        }
+      }
+      // Ensure classes has at least a default
+      if (this.state.classes.length === 0 && this.state.students.length > 0) {
+        this.state.classes = ['未分班'];
+      }
+    } catch(e) { console.warn('Load data error:', e); }
+  },
+
+  saveData() {
+    try {
+      localStorage.setItem('eng_hw_v6', JSON.stringify({
+        answers: this.state.answers,
+        checkins: this.state.checkins,
+        errorBook: this.state.errorBook,
+        students: this.state.students,
+        parentStudents: this.state.parentStudents,
+        classes: this.state.classes,
+      }));
+    } catch(e) { console.warn('Save data error:', e); }
+  },
+
+  // ===== Login =====
+  isTeacher() {
+    return this.state.phone === TEACHER_PHONE;
+  },
+
+  isWeChat() {
+    return /MicroMessenger/i.test(navigator.userAgent);
+  },
+
+  // Real-time name format validation
+  checkNameFormat() {
+    var input = document.getElementById('login-name');
+    var hint = document.getElementById('name-hint');
+    var errEl = document.getElementById('name-error');
+    if (!input || !hint) return;
+    var val = input.value.trim();
+    var nameRegex = /^[\u4e00-\u9fa5]{2,4}-[A-Za-z]{2,20}$/;
+    if (val === '') {
+      hint.style.color = 'var(--text-sub)';
+      hint.textContent = '格式：中文名(2-4字) + 减号 + 英文名(2-20字母)，如：马慧-Amy';
+      if (errEl) errEl.style.display = 'none';
+    } else if (nameRegex.test(val)) {
+      hint.style.color = 'var(--success)';
+      hint.textContent = '✅ 格式正确';
+      if (errEl) errEl.style.display = 'none';
+    } else {
+      hint.style.color = 'var(--danger)';
+      if (val.indexOf('-') === -1) {
+        hint.textContent = '⚠️ 缺少减号"-"，正确格式：中文名-英文名（如：马慧-Amy）';
+      } else {
+        var parts = val.split('-');
+        if (parts[0] && !/^[\u4e00-\u9fa5]{2,4}$/.test(parts[0])) {
+          hint.textContent = '⚠️ 中文名需要2-4个汉字';
+        } else if (parts[1] && !/^[A-Za-z]{2,20}$/.test(parts[1])) {
+          hint.textContent = '⚠️ 英文名需要2-20个英文字母';
+        } else {
+          hint.textContent = '⚠️ 格式不正确，正确格式：中文名-英文名（如：马慧-Amy）';
+        }
+      }
+    }
+  },
+
+  login() {
+    const phone = document.getElementById('login-phone').value.trim();
+    const name = document.getElementById('login-name').value.trim();
+    if (!phone || phone.length < 11) { alert('请输入正确的11位手机号'); return; }
+    if (!name) { alert('请输入备注名'); return; }
+
+    // Validate name format: must be 中文名-英文名
+    const nameRegex = /^[\u4e00-\u9fa5]{2,4}-[A-Za-z]{2,20}$/;
+    if (!nameRegex.test(name)) {
+      var errEl = document.getElementById('name-error');
+      if (errEl) {
+        errEl.style.display = 'block';
+        errEl.scrollIntoView({behavior:'smooth', block:'center'});
+      }
+      alert('备注名格式不正确！必须按"中文名-英文名"格式填写，例如：马慧-Amy\n（中文名2-4个汉字，英文名2-20个字母）');
+      return;
+    }
+
+    this.state.phone = phone;
+    this.state.userName = name;
+
+    // Save credentials for auto-login next time
+    try {
+      localStorage.setItem('amy_saved_login', JSON.stringify({ phone: phone, name: name }));
+    } catch(e) {}
+
+    // Enable audio on user interaction (login click is a valid user gesture)
+    this.state.audioEnabled = true;
+    this._ttsUnlocked = true;
+    // Unlock Web Audio API context (for sound effects)
+    var ctx = this._getAudioCtx();
+    if (ctx && ctx.state === 'suspended') { ctx.resume(); }
+
+    // CRITICAL: Unlock the persistent audio element NOW (within user gesture).
+    // This must happen BEFORE any async calls (registerStudent uses await)
+    // because the browser only allows audioEl.play() inside a user gesture.
+    // Once unlocked here, subsequent play() calls will work even after async.
+    // Uses an inline silent WAV (no network dependency) for maximum reliability.
+    var unlockAudioEl = document.getElementById('tts-player');
+    if (unlockAudioEl) {
+      unlockAudioEl.src = this.SILENT_WAV;
+      unlockAudioEl.volume = 0;
+      var unlockPromise = unlockAudioEl.play();
+      if (unlockPromise && unlockPromise.then) {
+        unlockPromise.then(function() { unlockAudioEl.volume = 1; })
+                     .catch(function() { unlockAudioEl.volume = 1; });
+      }
+    }
+
+    this.loadVoices();
+
+    // Determine role by phone number
+    if (phone === TEACHER_PHONE) {
+      this.state.role = 'teacher';
+      this.state.className = '';
+      this.saveData();
+      this.showApp();
+    } else {
+      this.state.role = 'user';
+      // Register student and check approval
+      this.registerStudent(phone, name);
+    }
+  },
+
+  // Register student - goes straight in, no approval needed
+  async registerStudent(phone, name) {
+    // Save locally
+    this.state.parentStudents[phone] = { name: name, class: '', approved: false };
+    let existing = this.state.students.find(s => s.phone === phone);
+    if (!existing) {
+      this.state.students.push({
+        id: 's' + Date.now(),
+        name: name,
+        phone: phone,
+        parentPhone: phone,
+        class: '',
+        approved: false,
+        registeredAt: new Date().toISOString()
+      });
+    } else {
+      // Update existing record
+      existing.name = name;
+      existing.registeredAt = existing.registeredAt || new Date().toISOString();
+    }
+    this.saveData();
+
+    // Upload to cloud (non-blocking)
+    this.syncToCloud();
+
+    // Check cloud for class assignment (teacher may have pre-assigned)
+    if (typeof Cloud !== 'undefined') {
+      try {
+        const cloudData = await Cloud.loadAll();
+        if (cloudData && cloudData.students) {
+          const cloudStudent = cloudData.students.find(s => s.phone === phone);
+          if (cloudStudent && cloudStudent.class) {
+            this.state.className = cloudStudent.class;
+            // Update local record
+            this.state.students = this.state.students.map(s =>
+              s.phone === phone ? { ...s, approved: true, class: cloudStudent.class } : s
+            );
+            this.saveData();
+          }
+        }
+      } catch(e) { console.warn('Cloud check error:', e); }
+    }
+
+    // Go straight into the app - no waiting page!
+    this.showApp();
+  },
+
+  showWaitingPage() {
+    document.getElementById('login-page').classList.add('hidden');
+    document.getElementById('main-app').classList.add('hidden');
+    const wp = document.getElementById('waiting-page');
+    if (wp) wp.classList.remove('hidden');
+  },
+
+  logout() {
+    // Clear saved login so auto-login doesn't re-login
+    try { localStorage.removeItem('amy_saved_login'); } catch(e) {}
+    document.getElementById('login-page').classList.remove('hidden');
+    document.getElementById('main-app').classList.add('hidden');
+    const wp = document.getElementById('waiting-page');
+    if (wp) wp.classList.add('hidden');
+    document.getElementById('login-phone').value = '';
+    document.getElementById('login-name').value = '';
+    this.state.currentTab = 'weekly';
+    this.state.audioEnabled = false;
+    this.state.phone = '';
+    this.state.userName = '';
+  },
+
+  showApp() {
+    document.getElementById('login-page').classList.add('hidden');
+    const wp = document.getElementById('waiting-page');
+    if (wp) wp.classList.add('hidden');
+    document.getElementById('main-app').classList.remove('hidden');
+    // Default to the real today (teacher can still switch days for preview)
+    this.state.currentTab = this.isTeacher() ? 'weekly' : 'today';
+    this.state.currentDay = this.getTodayWeekdayIdx();
+    // Update header name - show student name or teacher label
+    const headerName = document.getElementById('header-name');
+    if (headerName) {
+      if (this.isTeacher()) {
+        headerName.textContent = 'Amy老师';
+      } else {
+        headerName.textContent = this.state.userName || '同学';
+      }
+    }
+    // Update class badge in header
+    const badge = document.getElementById('class-badge');
+    if (this.isTeacher()) {
+      badge.textContent = this.state.classes.length > 0 ? this.state.classes.join(' / ') : '未设置班级';
+    } else {
+      badge.textContent = this.state.className || '待分配';
+    }
+    // Show/hide header buttons
+    document.getElementById('invite-btn-header').style.display = this.isTeacher() ? '' : 'none';
+    document.getElementById('settings-btn-header').style.display = this.isTeacher() ? '' : 'none';
+    this.renderTabs();
+    this.renderContent();
+    // Cloud sync + auto-polling for BOTH roles:
+    // - Teacher: download student registrations, merge & upload
+    // - Student: download own class assignment (updates badge promptly
+    //   whenever the teacher assigns a class)
+    if (this.isTeacher()) {
+      this.syncFromCloud().then(() => {
+        // After downloading, also upload local data (merge)
+        this.syncToCloud();
+      });
+    } else {
+      this.syncFromCloud();
+    }
+    this.startAutoSync();
+  },
+
+  // ===== TTS / Voice =====
+  // TTS callback system - lets question rendering know when audio finishes
+  _ttsCallback: null,
+  _currentAudio: null,
+  _ttsUnlocked: false,  // Track if audio has been unlocked by user gesture
+  _speakToken: 0,       // Incremented on each speak() call to invalidate stale callbacks
+
+  // Inline silent WAV (~0.1s) — used to unlock the audio element inside a
+  // user gesture WITHOUT any network request. Works offline, instant, and
+  // can't be blocked by third-party TTS endpoints.
+  SILENT_WAV: 'data:audio/wav;base64,UklGRmQGAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YUAGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+
+  // ===== Date helpers (homework dates) =====
+  // Monday=0 .. Sunday=6
+  getTodayWeekdayIdx() {
+    return (new Date().getDay() + 6) % 7;
+  },
+  // Returns array of 7 Date objects (Mon..Sun) for the given week offset
+  // (0 = this week, 1 = next week)
+  getWeekDates(weekOffset) {
+    var now = new Date();
+    var monday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    monday.setDate(monday.getDate() - ((now.getDay() + 6) % 7) + (weekOffset || 0) * 7);
+    var dates = [];
+    for (var i = 0; i < 7; i++) {
+      var d = new Date(monday);
+      d.setDate(monday.getDate() + i);
+      dates.push(d);
+    }
+    return dates;
+  },
+  formatDateCn(d) {
+    return (d.getMonth() + 1) + '月' + d.getDate() + '日';
+  },
+  // Format a full date label for a homework day, e.g. "周一 · 8月24日"
+  getDayDateLabel(dayIdx, weekOffset) {
+    if (dayIdx < 0 || dayIdx > 6) return '';
+    var d = this.getWeekDates(weekOffset || 0)[dayIdx];
+    return this.formatDateCn(d);
+  },
+  // Is the given day index (of given week) actually today?
+  isDayToday(dayIdx, weekOffset) {
+    if (weekOffset) return false;
+    return dayIdx === this.getTodayWeekdayIdx();
+  },
+
+  loadVoices() {
+    if (!window.speechSynthesis) return;
+    const load = () => {
+      const voices = window.speechSynthesis.getVoices();
+      if (voices && voices.length > 0) {
+        this.state.voices = voices;
+      }
+    };
+    load();
+    window.speechSynthesis.onvoiceschanged = load;
+    setTimeout(load, 500);
+    setTimeout(load, 1500);
+    setTimeout(load, 3000);
+  },
+
+  // Unlock audio on mobile (must be called from user gesture)
+  enableAudio() {
+    this.state.audioEnabled = true;
+    this._ttsUnlocked = true;
+    // Unlock Web Audio API context (for sound effects)
+    var ctx = this._getAudioCtx();
+    if (ctx && ctx.state === 'suspended') { ctx.resume(); }
+    // Unlock the persistent audio element within user gesture
+    // Uses an inline silent WAV (no network dependency) for maximum reliability.
+    var unlockEl = document.getElementById('tts-player');
+    if (unlockEl) {
+      unlockEl.src = this.SILENT_WAV;
+      unlockEl.volume = 0;
+      var p = unlockEl.play();
+      if (p && p.then) {
+        p.then(function() { unlockEl.volume = 1; }).catch(function() { unlockEl.volume = 1; });
+      }
+    }
+    // Directly speak a test phrase - this call is within the user gesture context,
+    // so audioEl.play() will unlock the persistent audio element on mobile
+    this.speak('Hello! Welcome to Amy English class.', { onDone: () => { this.renderContent(); } });
+  },
+
+  // Main speak function - robust TTS with multiple fallbacks
+  // Primary: Youdao TTS (works for both words and sentences, most reliable)
+  // Fallback: Baidu TTS (secondary, for when Youdao fails)
+  // Last resort: speechSynthesis (built-in, no network needed)
+  speak(text, opts) {
+    if (!text) { if (opts && opts.onDone) opts.onDone(); return; }
+    opts = opts || {};
+
+    // Stop any currently playing audio FIRST
+    this._stopCurrentAudio();
+
+    // Increment speak token — all async callbacks check this to detect
+    // if they belong to a stale (superseded) speak() call
+    this._speakToken = (this._speakToken || 0) + 1;
+    var myToken = this._speakToken;
+
+    this._showSpeakingIndicator(true);
+    this._ttsCallback = opts.onDone || null;
+
+    var self = this;
+    var cleanText = text.substring(0, 500).trim();
+    var encoded = encodeURIComponent(cleanText);
+
+    var audioEl = document.getElementById('tts-player');
+    if (!audioEl) { audioEl = new Audio(); }
+
+    self._currentAudio = audioEl;
+    self._ttsDone = false;
+    self._audioStarted = false;
+
+    // Use Youdao TTS for ALL text (words AND sentences) — it is the most
+    // reliable cross-browser endpoint and handles full sentences fine.
+    var ttsUrl = 'https://dict.youdao.com/dictvoice?audio=' + encoded + '&type=2';
+    // Baidu TTS as secondary fallback URL
+    var fallbackUrl = 'https://fanyi.baidu.com/gettts?lan=en&text=' + encoded + '&spd=3&source=web';
+
+    var timeoutId = null;
+    var absoluteTimeout = null;
+    var synthFallbackCalled = false;
+    var baiduTried = false;
+
+    function finishTTS() {
+      if (self._ttsDone || myToken !== self._speakToken) return;
+      self._ttsDone = true;
+      if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+      if (absoluteTimeout) { clearTimeout(absoluteTimeout); absoluteTimeout = null; }
+      self._showSpeakingIndicator(false);
+      self._currentAudio = null;
+      if (self._ttsCallback) { self._ttsCallback(); self._ttsCallback = null; }
+    }
+
+    function trySynthFallback() {
+      if (self._ttsDone || myToken !== self._speakToken || synthFallbackCalled) return;
+      synthFallbackCalled = true;
+      try {
+        audioEl.onplaying = null;
+        audioEl.onended = null;
+        audioEl.onerror = null;
+        audioEl.pause();
+      } catch(e) {}
+      if (!self._audioStarted) {
+        self._speakWithSynthesis(cleanText, opts, myToken);
+      } else {
+        finishTTS();
+      }
+    }
+
+    audioEl.onplaying = function() {
+      if (myToken !== self._speakToken) return;
+      self._audioStarted = true;
+      if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+    };
+
+    audioEl.onended = function() {
+      finishTTS();
+    };
+
+    audioEl.onerror = function() {
+      if (self._ttsDone || myToken !== self._speakToken) return;
+      if (!self._audioStarted) {
+        // Try Baidu as secondary fallback before speechSynthesis
+        if (!baiduTried) {
+          baiduTried = true;
+          try {
+            audioEl.src = fallbackUrl;
+            audioEl.load();
+            audioEl.play().catch(function() { trySynthFallback(); });
+          } catch(e) { trySynthFallback(); }
+        } else {
+          trySynthFallback();
+        }
+      }
+    };
+
+    // If stalled (loading hangs), try Baidu then speechSynthesis
+    audioEl.onstalled = function() {
+      if (self._ttsDone || myToken !== self._speakToken || self._audioStarted) return;
+      if (!baiduTried) {
+        baiduTried = true;
+        try {
+          audioEl.src = fallbackUrl;
+          audioEl.load();
+          audioEl.play().catch(function() { trySynthFallback(); });
+        } catch(e) { trySynthFallback(); }
+      } else {
+        trySynthFallback();
+      }
+    };
+
+    audioEl.src = ttsUrl;
+    audioEl.load(); // Critical for Safari/cross-browser: must call load() after setting src
+
+    var playPromise = audioEl.play();
+    if (playPromise && typeof playPromise.then === 'function') {
+      playPromise.then(function() {
+        if (myToken !== self._speakToken) return;
+        self._audioStarted = true;
+        if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+      }).catch(function(err) {
+        if (self._ttsDone || myToken !== self._speakToken) return;
+        // play() was rejected — likely autoplay restriction or network error
+        // Try Baidu first, then speechSynthesis
+        if (!baiduTried) {
+          baiduTried = true;
+          try {
+            audioEl.src = fallbackUrl;
+            audioEl.load();
+            audioEl.play().then(function() {
+              if (myToken !== self._speakToken) return;
+              self._audioStarted = true;
+              if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+            }).catch(function() { trySynthFallback(); });
+          } catch(e) { trySynthFallback(); }
+        } else {
+          trySynthFallback();
+        }
+      });
+    }
+
+    // Safety timeout: if audio hasn't started in 2.5 seconds, try Baidu/synthesis
+    timeoutId = setTimeout(function() {
+      if (!self._ttsDone && !self._audioStarted && myToken === self._speakToken) {
+        if (!baiduTried) {
+          baiduTried = true;
+          try {
+            audioEl.src = fallbackUrl;
+            audioEl.load();
+            audioEl.play().then(function() {
+              if (myToken !== self._speakToken) return;
+              self._audioStarted = true;
+            }).catch(function() { trySynthFallback(); });
+          } catch(e) { trySynthFallback(); }
+        } else {
+          trySynthFallback();
+        }
+      }
+    }, 2500);
+
+    // Absolute timeout: no matter what, stop indicator after 12 seconds.
+    // If NOTHING ever started playing (all TTS sources failed), tell the
+    // user instead of failing silently.
+    absoluteTimeout = setTimeout(function() {
+      if (!self._ttsDone && myToken === self._speakToken) {
+        if (!self._audioStarted) {
+          self.showToast('🔇 语音播放失败，可点击🔊按钮重试', 'warn');
+        }
+        finishTTS();
+      }
+    }, 12000);
+  },
+
+  _stopCurrentAudio() {
+    // Increment speak token to invalidate ALL pending async callbacks
+    // (audio element events AND speechSynthesis events) from previous calls
+    this._speakToken = (this._speakToken || 0) + 1;
+    this._ttsDone = true;
+    this._audioStarted = false;
+    
+    if (this._currentAudio) {
+      try { 
+        this._currentAudio.onplaying = null;
+        this._currentAudio.onended = null;
+        this._currentAudio.onerror = null;
+        this._currentAudio.onstalled = null;
+        this._currentAudio.pause(); 
+      } catch(e) {}
+      this._currentAudio = null;
+    }
+    // Cancel any speechSynthesis that might be running
+    if (window.speechSynthesis) {
+      try { window.speechSynthesis.cancel(); } catch(e) {}
+    }
+  },
+
+  // speechSynthesis fallback (built into browser, no network needed)
+  // token parameter ensures we only fire callbacks for the CURRENT speak() call
+  _speakWithSynthesis(text, opts, token) {
+    var self = this;
+    var myToken = token || self._speakToken;
+    if (!window.speechSynthesis) {
+      this._showSpeakingIndicator(false);
+      if (myToken === self._speakToken && self._ttsCallback) { self._ttsCallback(); self._ttsCallback = null; }
+      return;
+    }
+
+    try {
+      window.speechSynthesis.cancel();
+      var u = new SpeechSynthesisUtterance(text);
+      u.lang = 'en-US';
+      u.rate = opts.rate || 0.85;
+      u.pitch = 1.0;
+      u.volume = 1.0;
+
+      // Load voices if needed
+      if (this.state.voices.length === 0) {
+        this.state.voices = window.speechSynthesis.getVoices() || [];
+      }
+
+      // Pick best available natural voice (auto-assign)
+      var voices = this.state.voices;
+      var voicePrefs = [
+        'Microsoft Aria Online', 'Microsoft Jenny Online', 'Microsoft Aria', 'Microsoft Jenny',
+        'Google US English', 'Samantha', 'Microsoft Zira',
+        'Microsoft Guy Online', 'Microsoft Davis Online', 'Microsoft Guy', 'Microsoft Davis',
+        'Karen', 'Moira', 'Tessa', 'Daniel', 'Alex'
+      ];
+      var chosen = null;
+      for (var i = 0; i < voicePrefs.length; i++) {
+        chosen = voices.find(function(v) { return v.name && v.name.indexOf(voicePrefs[i]) >= 0; });
+        if (chosen) break;
+      }
+      if (!chosen) chosen = voices.find(function(v) { return v.lang && v.lang.indexOf('en') === 0; });
+      if (chosen) u.voice = chosen;
+
+      u.onend = function() {
+        // Only fire if this is still the current speak call
+        if (myToken !== self._speakToken) return;
+        self._showSpeakingIndicator(false);
+        if (self._ttsCallback) { self._ttsCallback(); self._ttsCallback = null; }
+      };
+      u.onerror = function() {
+        // Only fire if this is still the current speak call
+        if (myToken !== self._speakToken) return;
+        self._showSpeakingIndicator(false);
+        if (self._ttsCallback) { self._ttsCallback(); self._ttsCallback = null; }
+      };
+
+      // Timeout: if speech doesn't start in 3 seconds, call callback
+      var started = false;
+      u.onstart = function() {
+        if (myToken !== self._speakToken) return;
+        started = true;
+        self._audioStarted = true; // synthesis is producing sound — don't fire the "failed" toast
+      };
+      setTimeout(function() {
+        if (myToken !== self._speakToken) return;
+        if (!started) {
+          self._showSpeakingIndicator(false);
+          if (self._ttsCallback) { self._ttsCallback(); self._ttsCallback = null; }
+        }
+      }, 3000);
+
+      window.speechSynthesis.speak(u);
+    } catch(e) {
+      this._showSpeakingIndicator(false);
+      if (myToken === self._speakToken && self._ttsCallback) { self._ttsCallback(); self._ttsCallback = null; }
+    }
+  },
+
+  // Show/hide speaking indicator
+  _showSpeakingIndicator(show) {
+    var indicators = document.querySelectorAll('.auto-read-badge');
+    indicators.forEach(function(el) {
+      if (show) {
+        el.classList.add('speaking');
+        el.innerHTML = '<span class="speaking-anim">\ud83d\udd0a</span> \u6b63\u5728\u6717\u8bfb...';
+      } else {
+        el.classList.remove('speaking');
+        el.innerHTML = '<span>\u2705</span> \u6717\u8bfb\u5b8c\u6210';
+      }
+    });
+  },
+
+  // ===== Global toast notification (non-blocking) =====
+  _toastTimer: null,
+  showToast(msg, type) {
+    var t = document.getElementById('app-toast');
+    if (!t) {
+      t = document.createElement('div');
+      t.id = 'app-toast';
+      document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.className = 'app-toast show' + (type ? ' ' + type : '');
+    if (this._toastTimer) clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(function() {
+      t.classList.remove('show');
+    }, 3000);
+  },
+
+  // Auto-speak with callback - minimal delay for fast response
+  autoSpeak(text, callback) {
+    if (this.state.audioEnabled && text) {
+      this.speak(text, { onDone: callback });
+    } else if (callback) {
+      callback();
+    }
+  },
+
+  // ===== Sound Effects (Web Audio API - no external files needed) =====
+  _audioCtx: null,
+  _getAudioCtx() {
+    if (!this._audioCtx) {
+      try {
+        this._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      } catch(e) { return null; }
+    }
+    return this._audioCtx;
+  },
+
+  // Play a pleasant "ding" sound for correct answers
+  _playCorrectSound() {
+    var ctx = this._getAudioCtx();
+    if (!ctx) return;
+    try {
+      if (ctx.state === 'suspended') ctx.resume();
+      // Two ascending notes (C5 -> E5 -> G5) - a happy chord arpeggio
+      var notes = [523.25, 659.25, 783.99];
+      notes.forEach(function(freq, i) {
+        var osc = ctx.createOscillator();
+        var gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = freq;
+        osc.type = 'sine';
+        var startTime = ctx.currentTime + i * 0.08;
+        gain.gain.setValueAtTime(0, startTime);
+        gain.gain.linearRampToValueAtTime(0.3, startTime + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.25);
+        osc.start(startTime);
+        osc.stop(startTime + 0.3);
+      });
+    } catch(e) {}
+  },
+
+  // Play a gentle "buzz" sound for wrong answers
+  _playWrongSound() {
+    var ctx = this._getAudioCtx();
+    if (!ctx) return;
+    try {
+      if (ctx.state === 'suspended') ctx.resume();
+      var osc = ctx.createOscillator();
+      var gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = 200;
+      osc.type = 'square';
+      gain.gain.setValueAtTime(0, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.15, ctx.currentTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.3);
+    } catch(e) {}
+  },
+
+  // Show celebration animation
+  _showCelebration(el) {
+    if (!el) return;
+    var emojis = ['\ud83c\udf89', '\u2b50', '\ud83d\udcab', '\ud83c\udf8a', '\u2728', '\ud83d\ude0d'];
+    var emoji = emojis[Math.floor(Math.random() * emojis.length)];
+    var div = document.createElement('div');
+    div.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:60px;pointer-events:none;z-index:100;animation:celebrate 1s ease-out forwards';
+    div.textContent = emoji;
+    el.style.position = 'relative';
+    el.appendChild(div);
+    setTimeout(function() { if (div.parentNode) div.parentNode.removeChild(div); }, 1000);
+  },
+
+  // ===== Cloud Sync =====
+  // Sync all data TO cloud (students + classes) - merge to avoid overwriting
+  async syncToCloud() {
+    if (typeof Cloud === 'undefined') return;
+    try {
+      // First load cloud data to merge
+      const cloudData = await Cloud.loadAll();
+
+      // Build merged student list
+      let mergedStudents = [...this.state.students];
+      if (cloudData && cloudData.students) {
+        cloudData.students.forEach(cs => {
+          if (cs && cs.phone) {
+            let local = mergedStudents.find(s => s.phone === cs.phone);
+            if (!local) {
+              // Cloud student not in local - add it
+              mergedStudents.push({
+                id: cs.id || ('s' + cs.phone),
+                name: cs.name,
+                phone: cs.phone,
+                parentPhone: cs.phone,
+                class: cs.class || '',
+                approved: cs.approved || false,
+                registeredAt: cs.registeredAt || new Date().toISOString()
+              });
+            } else {
+              // IMPORTANT: cloud is the source of truth for class/approved.
+              // Without this, a student device with a stale local record could
+              // overwrite (wipe) a class the teacher just assigned.
+              if (cs.class) local.class = cs.class;
+              if (cs.approved) local.approved = cs.approved;
+              if (cs.name) local.name = cs.name;
+            }
+          }
+        });
+      }
+
+      // Build merged classes
+      let mergedClasses = [...this.state.classes];
+      if (cloudData && cloudData.classes) {
+        cloudData.classes.forEach(c => {
+          if (c && !mergedClasses.includes(c)) mergedClasses.push(c);
+        });
+      }
+
+      // Save merged data to cloud
+      const data = {
+        students: mergedStudents.map(s => ({
+          id: s.id,
+          name: s.name,
+          phone: s.phone,
+          class: s.class || '',
+          approved: s.approved || false,
+          registeredAt: s.registeredAt || new Date().toISOString()
+        })),
+        classes: mergedClasses,
+        lastUpdated: new Date().toISOString()
+      };
+      const saveOk = await Cloud.saveAll(data);
+      this._reportSyncResult(saveOk);
+
+      // Also update local state with merged data
+      this.state.students = mergedStudents;
+      this.state.classes = mergedClasses;
+      this.saveData();
+    } catch(e) {
+      console.warn('Sync to cloud error:', e);
+      this._reportSyncResult(false);
+    }
+  },
+
+  // Report sync result to the user via toast (throttled: failures shown
+  // at most once every 5 minutes so auto-polling doesn't spam)
+  _reportSyncResult(ok) {
+    var now = Date.now();
+    if (ok) {
+      this._lastSyncOk = true;
+      this._lastSyncAt = now;
+      return;
+    }
+    var wasOk = this._lastSyncOk !== false;
+    this._lastSyncOk = false;
+    if (wasOk || !this._lastFailToastAt || (now - this._lastFailToastAt) > 300000) {
+      this._lastFailToastAt = now;
+      this.showToast('⚠️ 云同步失败，数据已保存在本机', 'warn');
+    }
+  },
+
+  // Human-readable sync status for teacher pages
+  _syncStatusText() {
+    if (this._lastSyncOk === false) return '⚠️ 同步失败（网络问题），点击"立即同步"重试';
+    if (this._lastSyncAt) {
+      var d = new Date(this._lastSyncAt);
+      var hm = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+      return '已连接 · 上次同步 ' + hm;
+    }
+    return '已开启';
+  },
+
+  // Manual full sync (push local changes, then pull remote changes)
+  async manualSync() {
+    this.showToast('🔄 正在同步...', 'info');
+    await this.syncToCloud();
+    await this.syncFromCloud();
+    if (this._lastSyncOk !== false) {
+      this.showToast('✅ 同步成功，已是最新数据');
+    }
+    this.renderContent();
+  },
+
+  // Sync all data FROM cloud (teacher loads student registrations)
+  async syncFromCloud() {
+    if (typeof Cloud === 'undefined') return;
+    try {
+      const cloudData = await Cloud.loadAll();
+      if (!cloudData) {
+        // Distinguish "cloud is empty" from "cloud unreachable":
+        // loadAll() sets lastError only on real network failures.
+        if (Cloud.lastError && Cloud.lastError.indexOf('网络') >= 0) {
+          this._reportSyncResult(false);
+        }
+        return;
+      }
+      this._lastSyncOk = true;
+
+      // Merge students from cloud
+      if (cloudData.students && Array.isArray(cloudData.students)) {
+        cloudData.students.forEach(cs => {
+          if (cs && cs.phone) {
+            let local = this.state.students.find(s => s.phone === cs.phone);
+            if (local) {
+              // Update local with cloud data (cloud is source of truth for class/approved)
+              local.name = cs.name || local.name;
+              if (cs.class !== undefined) local.class = cs.class;
+              if (cs.approved !== undefined) local.approved = cs.approved;
+              local.registeredAt = cs.registeredAt || local.registeredAt;
+            } else {
+              // New student from cloud - add locally
+              this.state.students.push({
+                id: cs.id || ('s' + cs.phone),
+                name: cs.name,
+                phone: cs.phone,
+                parentPhone: cs.phone,
+                class: cs.class || '',
+                approved: cs.approved || false,
+                registeredAt: cs.registeredAt || new Date().toISOString()
+              });
+            }
+          }
+        });
+      }
+
+      // Merge classes from cloud
+      if (cloudData.classes && Array.isArray(cloudData.classes)) {
+        cloudData.classes.forEach(c => {
+          if (c && !this.state.classes.includes(c)) this.state.classes.push(c);
+        });
+      }
+
+      this.saveData();
+
+      // Student side: keep own class assignment up to date.
+      // When the teacher assigns a class, students pick it up here
+      // (polled every 15s + on every app foreground).
+      if (!this.isTeacher() && this.state.phone) {
+        const me = this.state.students.find(s => s.phone === this.state.phone);
+        const cloudClass = me ? (me.class || '') : '';
+        if (cloudClass && cloudClass !== this.state.className) {
+          this.state.className = cloudClass;
+          this.saveData();
+          // Update the class badge in the header right away
+          const badge = document.getElementById('class-badge');
+          if (badge) badge.textContent = cloudClass;
+          // Re-render so any class-dependent view refreshes
+          this.renderContent();
+          console.log('Class updated from cloud:', cloudClass);
+        } else if (!cloudClass && this.state.className) {
+          // Class was removed on teacher side — clear it
+          this.state.className = '';
+          const badge = document.getElementById('class-badge');
+          if (badge) badge.textContent = '待分配';
+        }
+      }
+
+      // Teacher: re-render if on a relevant tab
+      if (this.isTeacher() && (this.state.currentTab === 'students' || this.state.currentTab === 'classmgmt' || this.state.currentTab === 'checkin')) {
+        this.renderContent();
+      }
+    } catch(e) { console.warn('Sync from cloud error:', e); }
+  },
+
+  // Auto-polling - keeps data fresh on BOTH teacher and student devices.
+  // Teacher: picks up new student registrations (every 30s).
+  // Student: picks up class assignments made by the teacher (every 15s)
+  //          so the class badge updates promptly after the teacher
+  //          assigns a class.
+  startAutoSync() {
+    if (this._syncInterval) clearInterval(this._syncInterval);
+    var interval = this.isTeacher() ? 30000 : 15000;
+    this._syncInterval = setInterval(() => {
+      this.syncFromCloud();
+    }, interval);
+
+    // Also sync whenever the app comes back to the foreground
+    // (covers WeChat/browser tab switching, phone unlock)
+    if (!this._visibilityHandler) {
+      var self = this;
+      this._visibilityHandler = function() {
+        if (document.visibilityState === 'visible' && self.state.phone) {
+          self.syncFromCloud();
+        }
+      };
+      document.addEventListener('visibilitychange', this._visibilityHandler);
+    }
+  },
+
+  // ===== Settings =====
+  showSettings() {
+    this.showModal(
+      '<div class="modal-header"><div class="modal-title">\u2699\ufe0f \u7cfb\u7edf\u8bbe\u7f6e</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>' +
+      '<div class="modal-body">' +
+        '<div class="settings-card">' +
+          '<div class="sc-title">\u2601\ufe0f \u4e91\u7aef\u540c\u6b65</div>' +
+          '<div class="sc-desc">\u5b66\u751f\u6ce8\u518c\u4fe1\u606f\u81ea\u52a8\u540c\u6b65\u5230\u4e91\u7aef\uff0c\u65e0\u9700\u624b\u52a8\u914d\u7f6e\u3002\u8001\u5e08\u767b\u5f55\u540e\u81ea\u52a8\u63a5\u6536\u5b66\u751f\u6ce8\u518c\u4fe1\u606f\u3002</div>' +
+          '<div class="cloud-status on">\u2705 \u4e91\u7aef\u540c\u6b65\u5df2\u5f00\u542f\uff08\u81ea\u52a8\uff09</div>' +
+          '<button class="btn btn-outline btn-sm mt-8" onclick="App.manualSync();App.closeModal()">\ud83d\udd04 \u7acb\u5373\u540c\u6b65</button>' +
+        '</div>' +
+        '<div class="settings-card">' +
+          '<div class="sc-title">\ud83c\udfa4 \u8bed\u97f3\u8bbe\u7f6e</div>' +
+          '<div class="sc-desc">\u5982\u679c\u5fae\u4fe1\u5185\u65e0\u6cd5\u64ad\u653e\u8bed\u97f3\uff0c\u8bf7\u70b9\u53f3\u4e0a\u89d2 \u00b7\u00b7\u00b7 \u9009\u62e9\u201c\u5728\u6d4f\u89c8\u5668\u4e2d\u6253\u5f00\u201d</div>' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+          '<button class="btn btn-outline btn-sm" onclick="App.testTTS(1)">\ud83d\udd0a \u8bd5\u542c\u6709\u9053TTS</button>' +
+          '<button class="btn btn-outline btn-sm" onclick="App.testTTS(2)">\ud83d\udd0a \u8bd5\u542c\u767e\u5ea6TTS</button>' +
+          '<button class="btn btn-outline btn-sm" onclick="App.testTTS(3)">\ud83d\udd0a \u8bd5\u542c\u6d4f\u89c8\u5668TTS</button>' +
+          '</div>' +
+          '<div id="tts-test-result" style="margin-top:8px;font-size:12px"></div>' +
+        '</div>' +
+        '<div class="settings-card">' +
+          '<div class="sc-title">\ud83d\udcca \u6570\u636e\u7ba1\u7406</div>' +
+          '<div class="sc-desc">\u672c\u5730\u6570\u636e\u4f1a\u81ea\u52a8\u5907\u4efd\u5230\u4e91\u7aef\u3002\u5982\u9700\u91cd\u7f6e\u672c\u5730\u6570\u636e\uff0c\u53ef\u4ee5\u624b\u52a8\u5bfc\u5165\u4e91\u7aef\u6570\u636e\u3002</div>' +
+          '<button class="btn btn-outline btn-sm mt-8" onclick="App.syncFromCloud();alert(\'\u2705 \u5df2\u4ece\u4e91\u7aef\u540c\u6b65\u6700\u65b0\u6570\u636e\')">\ud83d\udcbe \u4ece\u4e91\u7aef\u6062\u590d\u6570\u636e</button>' +
+        '</div>' +
+      '</div>'
+    );
+  },
+
+  saveSettings() {
+    this.closeModal();
+  },
+
+  // Test TTS with specific source
+  testTTS(source) {
+    var self = this;
+    var resultEl = document.getElementById('tts-test-result');
+    var testText = 'Hello! Welcome to Amy English class.';
+    var encoded = encodeURIComponent(testText);
+
+    if (resultEl) resultEl.innerHTML = '<span style="color:var(--info)">\u23f3 \u6b63\u5728\u6d4b\u8bd5...</span>';
+
+    var audioEl = document.getElementById('tts-player');
+    if (!audioEl) audioEl = new Audio();
+
+    // Stop any current audio
+    this._stopCurrentAudio();
+    this._speakToken = (this._speakToken || 0) + 1;
+    var myToken = this._speakToken;
+    this._ttsDone = false;
+    this._currentAudio = audioEl;
+
+    var url;
+    if (source === 1) {
+      url = 'https://dict.youdao.com/dictvoice?audio=' + encoded + '&type=2';
+    } else if (source === 2) {
+      url = 'https://fanyi.baidu.com/gettts?lan=en&text=' + encoded + '&spd=3&source=web';
+    } else {
+      // Browser speechSynthesis
+      if (resultEl) resultEl.innerHTML = '<span style="color:var(--info)">\u23f3 \u6b63\u5728\u4f7f\u7528\u6d4f\u89c8\u5668\u5185\u7f6e\u8bed\u97f3...</span>';
+      this._ttsCallback = function() {
+        if (myToken !== self._speakToken) return;
+        if (resultEl) resultEl.innerHTML = '<span style="color:var(--success)">\u2705 \u6d4f\u89c8\u5668TTS\u64ad\u653e\u5b8c\u6210\uff01\u5982\u679c\u542c\u5230\u4e86\u58f0\u97f3\uff0c\u8bf4\u660e\u6d4f\u89c8\u5668TTS\u53ef\u7528</span>';
+      };
+      this._speakWithSynthesis(testText, {}, myToken);
+      return;
+    }
+
+    audioEl.onended = function() {
+      if (myToken !== self._speakToken) return;
+      self._ttsDone = true;
+      self._currentAudio = null;
+      if (resultEl) {
+        var srcName = source === 1 ? '\u6709\u9053' : '\u767e\u5ea6';
+        resultEl.innerHTML = '<span style="color:var(--success)">\u2705 ' + srcName + 'TTS\u64ad\u653e\u6210\u529f\uff01\u5982\u679c\u542c\u5230\u4e86\u58f0\u97f3\uff0c\u8bf4\u660e' + srcName + 'TTS\u53ef\u7528</span>';
+      }
+    };
+    audioEl.onerror = function() {
+      if (myToken !== self._speakToken) return;
+      self._ttsDone = true;
+      self._currentAudio = null;
+      if (resultEl) {
+        var srcName = source === 1 ? '\u6709\u9053' : '\u767e\u5ea6';
+        resultEl.innerHTML = '<span style="color:var(--danger)">\u274c ' + srcName + 'TTS\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u5c1d\u8bd5\u5176\u4ed6\u9009\u9879</span>';
+      }
+    };
+
+    audioEl.src = url;
+    audioEl.load();
+    var playPromise = audioEl.play();
+    if (playPromise && typeof playPromise.then === 'function') {
+      playPromise.catch(function(err) {
+        if (myToken !== self._speakToken) return;
+        self._ttsDone = true;
+        self._currentAudio = null;
+        if (resultEl) {
+          var srcName = source === 1 ? '\u6709\u9053' : '\u767e\u5ea6';
+          resultEl.innerHTML = '<span style="color:var(--danger)">\u274c ' + srcName + 'TTS\u64ad\u653e\u5931\u8d25\uff1a' + (err.message || err.name || '\u672a\u77e5\u9519\u8bef') + '\u3002\u53ef\u80fd\u662f\u624b\u673a\u6d4f\u89c8\u5668\u9650\u5236\uff0c\u8bf7\u5728\u6d4f\u89c8\u5668\u4e2d\u6253\u5f00\u540e\u5c1d\u8bd5</span>';
+        }
+      });
+    }
+
+    // Timeout
+    setTimeout(function() {
+      if (!self._ttsDone && myToken === self._speakToken) {
+        if (resultEl) {
+          var srcName = source === 1 ? '\u6709\u9053' : '\u767e\u5ea6';
+          resultEl.innerHTML = '<span style="color:var(--warning)">\u23f3 ' + srcName + 'TTS\u8d85\u65f6\uff0c\u8bf7\u5c1d\u8bd5\u5176\u4ed6\u9009\u9879</span>';
+        }
+      }
+    }, 8000);
+  },
+
+  // ===== Tabs =====
+  renderTabs() {
+    const bar = document.getElementById('tab-bar');
+    const isTeacher = this.isTeacher();
+    let tabs;
+    if (isTeacher) {
+      tabs = [
+        { id: 'weekly', icon: '📋', name: '周计划' },
+        { id: 'daily', icon: '📅', name: '每日详情' },
+        { id: 'edit', icon: '✏️', name: '作业编辑' },
+        { id: 'checkin', icon: '📊', name: '打卡监控' },
+        { id: 'scores', icon: '📈', name: '成绩分析' },
+        { id: 'errors', icon: '❌', name: '错题本' },
+        { id: 'print', icon: '🖨️', name: '错题卷打印' },
+        { id: 'speaking', icon: '🎤', name: '口语记录' },
+        { id: 'students', icon: '👥', name: '学生管理' },
+        { id: 'classmgmt', icon: '🏫', name: '班级管理' },
+      ];
+    } else {
+      // Non-teacher: see today's homework, own child progress, class comparison, own error book
+      tabs = [
+        { id: 'today', icon: '📝', name: '今日作业' },
+        { id: 'myprogress', icon: '📊', name: '孩子打卡' },
+        { id: 'compare', icon: '🏆', name: '完成率对比' },
+        { id: 'myerrors', icon: '❌', name: '错题改错' },
+      ];
+    }
+    bar.innerHTML = tabs.map(t => `<button class="${t.id===this.state.currentTab?'active':''}" onclick="App.switchTab('${t.id}')"><span class="emoji">${t.icon}</span>${t.name}</button>`).join('');
+  },
+
+  switchTab(tab) {
+    this.state.currentTab = tab;
+    this.renderTabs();
+    this.renderContent();
+  },
+
+  renderContent() {
+    const area = document.getElementById('content-area');
+    const isTeacher = this.isTeacher();
+    const tab = this.state.currentTab;
+
+    if (isTeacher) {
+      switch(tab) {
+        case 'weekly': area.innerHTML = this.renderWeekly(); break;
+        case 'daily': area.innerHTML = this.renderDaily(); break;
+        case 'edit': area.innerHTML = this.renderEdit(); break;
+        case 'checkin': area.innerHTML = this.renderCheckin(); break;
+        case 'scores': area.innerHTML = this.renderScores(); break;
+        case 'errors': area.innerHTML = this.renderErrorBook(); break;
+        case 'print': area.innerHTML = this.renderPrint(); break;
+        case 'speaking': area.innerHTML = this.renderSpeakingRecords(); break;
+        case 'students': area.innerHTML = this.renderStudents(); break;
+        case 'classmgmt': area.innerHTML = this.renderClassMgmt(); break;
+      }
+    } else {
+      switch(tab) {
+        case 'today': area.innerHTML = this.renderToday(); break;
+        case 'myprogress': area.innerHTML = this.renderMyProgress(); break;
+        case 'compare': area.innerHTML = this.renderCompare(); break;
+        case 'myerrors': area.innerHTML = this.renderMyErrors(); break;
+      }
+    }
+  },
+
+  // ===== Teacher: Weekly Plan =====
+  renderWeekly() {
+    const thisWeek = this.getWeekDates(0);
+    const nextWeek = this.getWeekDates(1);
+    let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">📋 作业周计划（本周 + 下周）</h2>';
+    html += '<div class="stat-row mb-16">';
+    html += '<div class="stat-box"><div class="num">' + HOMEWORK_DATA.length + '</div><div class="label">每天模块</div></div>';
+    let totalMod = 0;
+    HOMEWORK_DATA.forEach(d => totalMod += d.modules.length);
+    html += '<div class="stat-box"><div class="num">' + totalMod + '</div><div class="label">周模块数</div></div>';
+    html += '<div class="stat-box"><div class="num">' + this.state.students.length + '</div><div class="label">学生数</div></div>';
+    let totalDur = 0;
+    HOMEWORK_DATA.forEach(d => totalDur += d.total_duration);
+    html += '<div class="stat-box"><div class="num">' + totalDur + '</div><div class="label">周总时长(分)</div></div>';
+    html += '</div>';
+
+    // Render one week block (weekOffset: 0=this week, 1=next week)
+    var renderWeekBlock = (weekOffset, dates) => {
+      var label = weekOffset === 0
+        ? '📅 本周作业（' + this.formatDateCn(dates[0]) + ' ~ ' + this.formatDateCn(dates[6]) + '）'
+        : '📅 下周作业（' + this.formatDateCn(dates[0]) + ' ~ ' + this.formatDateCn(dates[6]) + '）';
+      var out = '<h3 style="color:var(--primary-dark);margin:16px 0 8px">' + label + '</h3>';
+      out += '<div class="day-grid">';
+      HOMEWORK_DATA.forEach((day, i) => {
+        const isToday = this.isDayToday(i, weekOffset);
+        out += '<div class="day-card ' + (day.is_speaking_day ? 'speaking' : '') + '" style="' + (isToday ? 'border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-light)' : '') + '" onclick="App.viewDay(' + i + ',' + weekOffset + ')">';
+        out += '<div class="day-name">' + day.day_cn + (isToday ? ' <span style="font-size:11px;color:var(--primary)">今天</span>' : '') + '</div>';
+        out += '<div class="day-type" style="font-size:11px;color:var(--primary-dark)">' + this.formatDateCn(dates[i]) + '</div>';
+        out += '<div class="day-type">' + (day.is_speaking_day ? '🎤 AI口语日' : '📝 练习日') + '</div>';
+        out += '<div class="day-modules">' + day.modules.map(m => m.name_cn).join('<br>') + '</div>';
+        out += '<div class="day-duration">共' + day.total_duration + '分钟</div>';
+        out += '</div>';
+      });
+      out += '</div>';
+      return out;
+    };
+
+    html += renderWeekBlock(0, thisWeek);
+    html += renderWeekBlock(1, nextWeek);
+    // Hidden container used by viewDay for detail preview
+    html += '<div id="day-detail"></div>';
+    return html;
+  },
+
+  viewDay(idx, weekOffset) {
+    weekOffset = weekOffset || 0;
+    const day = HOMEWORK_DATA[idx];
+    const detail = document.getElementById('day-detail');
+    if (!detail) return;
+    const dateLabel = this.getDayDateLabel(idx, weekOffset);
+    const weekLabel = weekOffset === 0 ? '本周' : '下周';
+    let html = '<h3 style="color:var(--primary-dark);margin:16px 0 8px">' + weekLabel + day.day_cn + '（' + dateLabel + '）作业详情</h3>';
+    day.modules.forEach(m => {
+      html += '<div class="module-card">';
+      html += '<div class="module-header"><span class="m-name">' + this.getModuleIcon(m.type) + ' ' + m.name_cn + '</span><span class="m-duration">' + m.duration + '分钟</span></div>';
+      html += '<div class="module-body">';
+      if (m.type === 'speaking' && m.questions) {
+        m.questions.forEach((q, qi) => {
+          html += '<div class="q-item">';
+          html += '<div class="q-num">第' + (qi+1) + '题</div>';
+          html += '<div class="q-text">' + q.sentence + '</div>';
+          html += '<div class="text-sub fs-12">' + (q.sentence_cn||'') + '</div>';
+          html += '<div class="q-options">';
+          q.options.forEach((o, oi) => {
+            const cls = oi === q.answer ? 'correct' : '';
+            html += '<div class="q-option ' + cls + '">' + String.fromCharCode(65+oi) + '. ' + o + '</div>';
+          });
+          html += '</div>';
+          html += '<div class="q-answer">正确答案：' + String.fromCharCode(65+q.answer) + '</div>';
+          html += '<div class="q-explanation show"><div class="cn">📖 ' + (q.explanation_cn||'') + '</div><div class="en">📘 ' + (q.explanation_en||'') + '</div></div>';
+          if (q.pronunciation_tips) html += '<div class="fs-12 mt-8" style="color:var(--info)">🗣️ 发音提示：' + q.pronunciation_tips + '</div>';
+          html += '</div>';
+        });
+      } else if (m.type === 'vocabulary_game' && m.words) {
+        m.words.forEach((w, wi) => {
+          html += '<div class="q-item">';
+          html += '<div class="q-num">单词' + (wi+1) + '</div>';
+          html += '<div class="q-text">' + w.emoji + ' <strong>' + w.word + '</strong> ' + w.phonetic + '</div>';
+          html += '<div class="text-sub fs-12">释义：' + w.meaning + '</div>';
+          html += '<div class="text-sub fs-12">例句：' + w.example_en + ' ' + w.example_cn + '</div>';
+          html += '<div class="mt-8">通关阶段：' + w.stages.map(s => this.getStageName(s.type)).join(' → ') + '</div>';
+          html += '</div>';
+        });
+      } else if (m.type === 'writing_template') {
+        html += '<div class="q-item">';
+        html += '<div class="q-text">📝 ' + m.title + '</div>';
+        html += '<div class="writing-banner">⚠️ ' + m.requirement_cn + '</div>';
+        html += '<div class="writing-keywords">';
+        m.keywords.forEach(k => html += '<span class="keyword-chip">' + k + '</span>');
+        html += '</div>';
+        html += '<div class="writing-essay">' + this.renderTemplateText(m) + '</div>';
+        html += '<div class="q-answer">完整范文：' + m.full_text + '</div>';
+        html += '<div class="q-explanation show"><div class="cn">📖 ' + (m.explanation_cn||'') + '</div><div class="en">📘 ' + (m.explanation_en||'') + '</div></div>';
+        html += '</div>';
+      } else if (m.questions) {
+        m.questions.forEach((q, qi) => {
+          html += '<div class="q-item">';
+          html += '<div class="q-num">第' + (qi+1) + '题</div>';
+          if (m.passage && qi === 0) html += '<div class="card mb-8" style="background:var(--bg)"><div class="fs-12 text-sub mb-4">阅读材料：</div>' + m.passage + '</div>';
+          html += '<div class="q-text">' + q.question + '</div>';
+          if (q.options) {
+            html += '<div class="q-options">';
+            q.options.forEach((o, oi) => {
+              const cls = oi === q.answer ? 'correct' : '';
+              html += '<div class="q-option ' + cls + '">' + String.fromCharCode(65+oi) + '. ' + o + '</div>';
+            });
+            html += '</div>';
+          }
+          html += '<div class="q-answer">正确答案：' + (q.options ? String.fromCharCode(65+q.answer) : q.answer) + '</div>';
+          html += '<div class="q-explanation show"><div class="cn">📖 ' + (q.explanation_cn||'') + '</div><div class="en">📘 ' + (q.explanation_en||'') + '</div></div>';
+          html += '</div>';
+        });
+      }
+      html += '</div></div>';
+    });
+    detail.innerHTML = html;
+  },
+
+  getModuleIcon(type) {
+    const icons = { speaking:'🎤', vocabulary_game:'🎮', reading:'📖', grammar:'📐', multiple_choice:'📝', listening:'👂', cloze:'🔗', tense:'⏰', writing_template:'✍️', ket_pet:'🏆' };
+    return icons[type] || '📚';
+  },
+
+  getStageName(type) {
+    const names = { learn:'看图学词', image_choice:'看图选词', meaning_choice:'选释义', spell_fill:'拼写填空' };
+    return names[type] || type;
+  },
+
+  renderTemplateText(m) {
+    let text = m.template;
+    m.blanks.forEach(b => {
+      text = text.replace('{{' + b.id + '}}', '<span class="writing-blank" style="color:var(--primary)">[' + b.hint_cn + ']</span>');
+    });
+    return text;
+  },
+
+  // ===== Teacher: Daily Detail =====
+  renderDaily() {
+    let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">📅 每日作业详情</h2>';
+    html += '<div class="day-grid mb-16">';
+    HOMEWORK_DATA.forEach((day, i) => {
+      html += '<div class="day-card ' + (i===this.state.currentDay?'':'') + '" style="' + (i===this.state.currentDay?'border-color:var(--primary)':'') + '" onclick="App.selectDay(' + i + ')">';
+      html += '<div class="day-name">' + day.day_cn + (this.isDayToday(i, 0) ? ' <span style="font-size:11px;color:var(--primary)">今天</span>' : '') + '</div>';
+      html += '<div class="day-type" style="font-size:11px;color:var(--primary-dark)">' + this.getDayDateLabel(i, 0) + '</div>';
+      html += '<div class="day-type">' + day.modules.map(m=>m.name_cn).join('·') + '</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+    const day = HOMEWORK_DATA[this.state.currentDay];
+    html += '<div id="day-detail">' + this.renderDayModules(day) + '</div>';
+    return html;
+  },
+
+  selectDay(idx) {
+    this.state.currentDay = idx;
+    this.renderContent();
+  },
+
+  renderDayModules(day) {
+    const dayIdx = HOMEWORK_DATA.indexOf(day);
+    let html = '<h3 style="color:var(--primary-dark);margin:8px 0 12px">' + day.day_cn + '（' + this.getDayDateLabel(dayIdx >= 0 ? dayIdx : 0, 0) + '）· 共' + day.total_duration + '分钟</h3>';
+    day.modules.forEach(m => {
+      html += '<div class="module-card">';
+      html += '<div class="module-header"><span class="m-name">' + this.getModuleIcon(m.type) + ' ' + m.name_cn + '</span><span class="m-duration">' + m.duration + '分钟</span></div>';
+      html += '<div class="module-body">';
+      // Show all questions with answers and explanations (teacher view)
+      if (m.type === 'speaking' && m.questions) {
+        m.questions.forEach((q, qi) => {
+          html += '<div class="q-item">';
+          html += '<div class="q-num">第' + (qi+1) + '题</div>';
+          html += '<div class="q-text">' + q.sentence + '</div>';
+          html += '<div class="text-sub fs-12">' + q.sentence_cn + '</div>';
+          html += '<div class="q-options">';
+          q.options.forEach((o, oi) => {
+            html += '<div class="q-option ' + (oi===q.answer?'correct':'') + '">' + String.fromCharCode(65+oi) + '. ' + o + '</div>';
+          });
+          html += '</div>';
+          html += '<div class="q-answer">✅ 正确答案：' + String.fromCharCode(65+q.answer) + '</div>';
+          if (q.pronunciation_tips) html += '<div class="fs-12 mt-8" style="color:var(--info)">🗣️ ' + q.pronunciation_tips + '</div>';
+          html += '<div class="q-explanation show"><div class="cn">📖 ' + q.explanation_cn + '</div><div class="en">📘 ' + q.explanation_en + '</div></div>';
+          html += '</div>';
+        });
+      } else if (m.type === 'vocabulary_game' && m.words) {
+        m.words.forEach((w, wi) => {
+          html += '<div class="q-item">';
+          html += '<div class="q-num">单词' + (wi+1) + '</div>';
+          html += '<div class="q-text" style="font-size:18px">' + w.emoji + ' <strong>' + w.word + '</strong> ' + w.phonetic + ' = ' + w.meaning + '</div>';
+          html += '<div class="text-sub fs-12">例句：' + w.example_en + ' ' + w.example_cn + '</div>';
+          html += '<div class="mt-8 fs-12">闯关阶段：</div>';
+          w.stages.forEach((s, si) => {
+            html += '<div class="fs-12 text-sub">' + (si+1) + '. ' + this.getStageName(s.type);
+            if (s.prompt) html += ' — ' + s.prompt;
+            if (s.answer) html += ' (答案: ' + s.answer + ')';
+            html += '</div>';
+          });
+          html += '</div>';
+        });
+      } else if (m.type === 'writing_template') {
+        html += '<div class="q-item">';
+        html += '<div class="q-text">✍️ ' + m.title + '</div>';
+        html += '<div class="writing-banner">⚠️ ' + m.requirement_cn + '</div>';
+        html += '<div class="writing-keywords">';
+        m.keywords.forEach(k => html += '<span class="keyword-chip">' + k + '</span>');
+        html += '</div>';
+        html += '<div class="writing-essay">' + this.renderTemplateText(m) + '</div>';
+        html += '<div class="q-answer">完整范文：' + m.full_text + '</div>';
+        html += '<div class="q-explanation show"><div class="cn">📖 ' + m.explanation_cn + '</div><div class="en">📘 ' + m.explanation_en + '</div></div>';
+        html += '</div>';
+      } else if (m.questions) {
+        if (m.passage) html += '<div class="card mb-8" style="background:var(--bg)"><div class="fs-12 text-sub mb-4">📄 阅读材料：</div>' + (m.passage_cn||'') + '<br>' + m.passage + '</div>';
+        m.questions.forEach((q, qi) => {
+          html += '<div class="q-item">';
+          html += '<div class="q-num">第' + (qi+1) + '题</div>';
+          html += '<div class="q-text">' + q.question + '</div>';
+          if (q.options) {
+            html += '<div class="q-options">';
+            q.options.forEach((o, oi) => {
+              html += '<div class="q-option ' + (oi===q.answer?'correct':'') + '">' + String.fromCharCode(65+oi) + '. ' + o + '</div>';
+            });
+            html += '</div>';
+          }
+          html += '<div class="q-answer">✅ 正确答案：' + (q.options ? String.fromCharCode(65+q.answer) : q.answer) + '</div>';
+          html += '<div class="q-explanation show"><div class="cn">📖 ' + q.explanation_cn + '</div><div class="en">📘 ' + q.explanation_en + '</div></div>';
+          html += '</div>';
+        });
+      }
+      html += '</div></div>';
+    });
+    return html;
+  },
+
+  // ===== Teacher: Edit =====
+  renderEdit() {
+    let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">✏️ 作业编辑</h2>';
+    html += '<p class="text-sub mb-16">点击模块可修改名称、时长和说明</p>';
+    HOMEWORK_DATA.forEach((day, di) => {
+      html += '<div class="card mb-16">';
+      html += '<div class="card-title">' + day.day_cn + '（本周' + this.getDayDateLabel(di, 0) + '）· ' + day.theme_cn + ' · 共' + day.total_duration + '分钟</div>';
+      day.modules.forEach((m, mi) => {
+        html += '<div class="flex-between mb-8 p-8" style="background:var(--bg);border-radius:8px">';
+        html += '<span>' + this.getModuleIcon(m.type) + ' ' + m.name_cn + ' (' + m.duration + '分钟)</span>';
+        html += '<button class="btn btn-outline btn-sm" onclick="App.editModule(' + di + ',' + mi + ')">编辑</button>';
+        html += '</div>';
+      });
+      html += '</div>';
+    });
+    return html;
+  },
+
+  editModule(di, mi) {
+    const m = HOMEWORK_DATA[di].modules[mi];
+    this.showModal(`
+      <div class="modal-header"><div class="modal-title">编辑模块</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
+      <div class="modal-body">
+        <div class="form-group"><label>模块名称</label><input type="text" id="edit-name" value="${m.name_cn}"></div>
+        <div class="form-group"><label>时长（分钟）</label><input type="number" id="edit-duration" value="${m.duration}"></div>
+        <div class="form-group"><label>说明</label><textarea id="edit-note" rows="3" placeholder="模块说明">${m.requirement_cn||m.theme_cn||''}</textarea></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="App.saveEdit(${di},${mi})">保存</button>
+        <button class="btn btn-outline" onclick="App.closeModal()">取消</button>
+      </div>
+    `);
+  },
+
+  saveEdit(di, mi) {
+    const m = HOMEWORK_DATA[di].modules[mi];
+    m.name_cn = document.getElementById('edit-name').value;
+    m.duration = parseInt(document.getElementById('edit-duration').value);
+    const note = document.getElementById('edit-note').value;
+    if (m.requirement_cn !== undefined) m.requirement_cn = note;
+    // Recalculate total duration
+    HOMEWORK_DATA[di].total_duration = HOMEWORK_DATA[di].modules.reduce((s,mod) => s + mod.duration, 0);
+    this.closeModal();
+    this.renderContent();
+  },
+
+  // ===== Teacher: Check-in Monitor =====
+  renderCheckin() {
+    let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">📊 打卡监控</h2>';
+    // Note: no auto-generated demo data - show real data only
+    // Summary
+    html += '<div class="stat-row mb-16">';
+    let totalDone = 0, totalUndone = 0;
+    this.state.students.forEach(s => {
+      HOMEWORK_DATA.forEach((d, di) => {
+        const k = s.id + '_d' + di;
+        if (this.state.checkins[k] && this.state.checkins[k].done) totalDone++;
+        else totalUndone++;
+      });
+    });
+    html += '<div class="stat-box"><div class="num" style="color:var(--success)">' + totalDone + '</div><div class="label">已打卡</div></div>';
+    html += '<div class="stat-box"><div class="num" style="color:var(--danger)">' + totalUndone + '</div><div class="label">未打卡</div></div>';
+    html += '<div class="stat-box"><div class="num">' + Math.round(totalDone/(totalDone+totalUndone)*100) + '%</div><div class="label">完成率</div></div>';
+    html += '</div>';
+
+    // Table
+    html += '<div class="card"><div class="checkin-table"><table class="data-table"><thead><tr><th>学生</th>';
+    HOMEWORK_DATA.forEach((d, di) => html += '<th>' + d.day_cn + '<br><span style="font-weight:400;font-size:10px;color:var(--text-sub,#888)">' + this.getDayDateLabel(di, 0) + '</span></th>');
+    html += '<th>总完成</th><th>平均正确率</th></tr></thead><tbody>';
+    this.state.students.forEach(s => {
+      html += '<tr><td>' + s.name + '</td>';
+      let doneCount = 0, totalCorrect = 0, correctCount = 0;
+      HOMEWORK_DATA.forEach((d, di) => {
+        const k = s.id + '_d' + di;
+        const ck = this.state.checkins[k];
+        if (ck && ck.done) {
+          doneCount++;
+          if (ck.correctRate) { totalCorrect += ck.correctRate; correctCount++; }
+          const cls = ck.completed === 'partial' ? 'partial' : 'done';
+          html += '<td><span class="checkin-dot ' + cls + '" title="' + ck.time + ' 正确率' + ck.correctRate + '%">✓</span></td>';
+        } else {
+          html += '<td><span class="checkin-dot undone">✗</span></td>';
+        }
+      });
+      html += '<td>' + doneCount + '/' + HOMEWORK_DATA.length + '</td>';
+      html += '<td>' + (correctCount > 0 ? Math.round(totalCorrect/correctCount) + '%' : '-') + '</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table></div></div>';
+    return html;
+  },
+
+  // ===== Teacher: Score Analysis =====
+  renderScores() {
+    let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">📈 成绩分析</h2>';
+    HOMEWORK_DATA.forEach((day, di) => {
+      html += '<div class="card mb-16">';
+      html += '<div class="card-title">' + day.day_cn + '（' + this.getDayDateLabel(di, 0) + '）· ' + day.theme_cn + '</div>';
+      day.modules.forEach(m => {
+        // Calculate demo scores
+        const scores = [];
+        this.state.students.forEach(s => {
+          const k = s.id + '_d' + di;
+          const ck = this.state.checkins[k];
+          if (ck && ck.done && ck.correctRate) scores.push(ck.correctRate);
+        });
+        if (scores.length > 0) {
+          const avg = Math.round(scores.reduce((a,b)=>a+b,0)/scores.length);
+          const max = Math.max(...scores);
+          const min = Math.min(...scores);
+          const passRate = Math.round(scores.filter(s=>s>=60).length/scores.length*100);
+          html += '<div class="flex-between mb-8 p-8" style="background:var(--bg);border-radius:8px">';
+          html += '<span>' + this.getModuleIcon(m.type) + ' ' + m.name_cn + '</span>';
+          html += '<span>平均' + avg + '% | 最高' + max + '% | 最低' + min + '% | 及格率' + passRate + '%</span>';
+          html += '</div>';
+        }
+      });
+      html += '</div>';
+    });
+    return html;
+  },
+
+  // ===== Teacher: Error Book =====
+  renderErrorBook() {
+    let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">❌ 班级错题本</h2>';
+    // Collect errors from checkin data
+    const errors = [];
+    HOMEWORK_DATA.forEach((day, di) => {
+      day.modules.forEach(m => {
+        if (m.questions) {
+          m.questions.forEach(q => {
+            const wrongStudents = [];
+            this.state.students.forEach(s => {
+              const k = s.id + '_d' + di;
+              const ck = this.state.checkins[k];
+              if (ck && ck.done && ck.correctRate < 80 && Math.random() > 0.5) {
+                wrongStudents.push(s.name);
+              }
+            });
+            if (wrongStudents.length > 0) {
+              errors.push({ day: day.day_cn, module: m.name_cn, question: q.question || q.sentence, answer: q.options ? String.fromCharCode(65+q.answer) : q.answer, explanation_cn: q.explanation_cn, explanation_en: q.explanation_en, students: wrongStudents });
+            }
+          });
+        }
+      });
+    });
+    errors.sort((a,b) => b.students.length - a.students.length);
+    errors.forEach(e => {
+      html += '<div class="error-item">';
+      html += '<div class="e-q"><strong>' + e.day + '·' + e.module + '</strong> ' + e.question + '</div>';
+      html += '<div class="q-answer">正确答案：' + e.answer + '</div>';
+      html += '<div class="e-students">❌ 做错学生(' + e.students.length + '人)：' + e.students.join('、') + '</div>';
+      html += '<div class="q-explanation show"><div class="cn">📖 ' + e.explanation_cn + '</div><div class="en">📘 ' + e.explanation_en + '</div></div>';
+      html += '</div>';
+    });
+    if (errors.length === 0) html += '<p class="text-sub text-center">暂无错题记录</p>';
+    return html;
+  },
+
+  // ===== Teacher: Print Error Sheet =====
+  renderPrint() {
+    let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">🖨️ 错题卷打印</h2>';
+    html += '<p class="text-sub mb-16">选择学生生成个性化A4错题卷，答案默认隐藏，可切换显示</p>';
+    html += '<div class="flex gap-8 mb-16" style="flex-wrap:wrap">';
+    this.state.students.forEach(s => {
+      html += '<button class="btn btn-outline btn-sm" onclick="App.genErrorSheet(\'' + s.id + '\')">' + s.name + '</button>';
+    });
+    html += '</div>';
+    html += '<div id="print-area"></div>';
+    return html;
+  },
+
+  genErrorSheet(sid) {
+    const student = this.state.students.find(s => s.id === sid);
+    if (!student) return;
+    // Collect this student's errors
+    const errors = [];
+    HOMEWORK_DATA.forEach((day, di) => {
+      day.modules.forEach(m => {
+        if (m.questions) {
+          m.questions.forEach(q => {
+            const k = student.id + '_d' + di;
+            const ck = this.state.checkins[k];
+            if (ck && ck.done && ck.correctRate < 85 && Math.random() > 0.4) {
+              errors.push({ day: day.day_cn, module: m.name_cn, q: q, type: m.type });
+            }
+          });
+        }
+      });
+    });
+    // If too few errors, add similar questions
+    const similarQuestions = [];
+    if (errors.length < 5) {
+      const pool = [
+        { question: 'He ___ (go) to school by bus every day.', answer: 'goes', explanation_cn: '第三人称单数，every day 表示一般现在时，go 变 goes。', explanation_en: 'Third person singular with habitual action uses goes.' },
+        { question: 'I ___ (read) a book when the phone rang.', answer: 'was reading', explanation_cn: '过去进行时，was/were + doing，表示过去某时刻正在进行的动作。', explanation_en: 'Past continuous: was/were + doing for an action in progress in the past.' },
+        { question: 'She has ___ (finish) her homework already.', answer: 'finished', explanation_cn: '现在完成时 has + 过去分词，already 用于肯定句。', explanation_en: 'Present perfect: has + past participle, already for affirmative.' },
+        { question: '___ interesting story it is!', answer: 'What an', explanation_cn: '感叹句 What (a/an) + adj + noun！story 可数名词单数，interesting 元音开头用 an。', explanation_en: 'Exclamatory: What (a/an) + adj + noun! Singular countable with vowel sound uses an.' },
+        { question: 'There ___ many apples on the tree.', answer: 'are', explanation_cn: 'There be 就近原则，apples 复数用 are。', explanation_en: 'There be follows proximity principle; plural apples uses are.' },
+      ];
+      pool.forEach((p, i) => {
+        if (errors.length + similarQuestions.length < 6) {
+          similarQuestions.push(p);
+        }
+      });
+    }
+
+    let html = '<div class="a4-print-area" id="a4-print-' + sid + '">';
+    html += '<div class="a4-sheet" id="a4-sheet-' + sid + '">';
+    html += '<h1>🐰 英语错题巩固卷</h1>';
+    html += '<div class="a4-info">姓名：___________  日期：___________  得分：___________</div>';
+    if (errors.length > 0) {
+      html += '<h3 style="margin:12px 0 8px">一、错题重做（共' + errors.length + '题）</h3>';
+      errors.forEach((e, i) => {
+        html += '<div class="a4-q">';
+        html += '<div class="a4-q-num">' + (i+1) + '. [' + e.day + '·' + e.module + '] ' + (e.q.question || e.q.sentence) + '</div>';
+        if (e.q.options) {
+          e.q.options.forEach((o, oi) => {
+            html += '<div style="margin-left:20px">' + String.fromCharCode(65+oi) + '. ' + o + '</div>';
+          });
+        }
+        html += '<div class="a4-write-area"></div>';
+        html += '<div class="a4-write-area"></div>';
+        // Hidden answer (teacher can toggle)
+        html += '<div class="a4-ans" id="ans-' + sid + '-' + i + '">正确答案：' + (e.q.options ? String.fromCharCode(65+e.q.answer) : e.q.answer) + '<br>解析：' + (e.q.explanation_cn||'') + '<br>Explanation: ' + (e.q.explanation_en||'') + '</div>';
+        html += '</div>';
+      });
+    }
+    if (similarQuestions.length > 0) {
+      html += '<h3 style="margin:16px 0 8px">二、相似题型巩固练习（共' + similarQuestions.length + '题）</h3>';
+      similarQuestions.forEach((sq, i) => {
+        html += '<div class="a4-q a4-similar">';
+        html += '<div class="a4-q-num">' + (errors.length+i+1) + '. ' + sq.question + '</div>';
+        html += '<div class="a4-write-area"></div>';
+        html += '<div class="a4-ans" id="sim-ans-' + sid + '-' + i + '">正确答案：' + sq.answer + '<br>解析：' + sq.explanation_cn + '<br>Explanation: ' + sq.explanation_en + '</div>';
+        html += '</div>';
+      });
+    }
+    html += '<div style="margin-top:20px;text-align:center;font-size:10pt;color:#999">🐰 Amy老师英语打卡平台 | 错题更少，进步更快</div>';
+    html += '</div></div>';
+
+    // Controls
+    html += '<div class="no-print mt-16 text-center" style="padding:12px">';
+    html += '<button class="btn btn-outline btn-sm" onclick="App.toggleAnswers(\'' + sid + '\',' + errors.length + ',' + similarQuestions.length + ')">👁️ 显示/隐藏答案</button> ';
+    html += '<button class="btn btn-primary btn-sm" onclick="App.doPrint()">🖨️ 打印</button>';
+    html += '</div>';
+
+    document.getElementById('print-area').innerHTML = html;
+  },
+
+  toggleAnswers(sid, errCount, simCount) {
+    for (let i = 0; i < errCount; i++) {
+      const el = document.getElementById('ans-' + sid + '-' + i);
+      if (el) el.classList.toggle('show');
+    }
+    for (let i = 0; i < simCount; i++) {
+      const el = document.getElementById('sim-ans-' + sid + '-' + i);
+      if (el) el.classList.toggle('show');
+    }
+  },
+
+  doPrint() { window.print(); },
+
+  // ===== Teacher: Speaking Records =====
+  renderSpeakingRecords() {
+    let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">🎤 AI口语练习记录</h2>';
+    html += '<p class="text-sub mb-16">查看每个学生的口语练习成绩和发音问题</p>';
+    HOMEWORK_DATA.filter(d => d.is_speaking_day).forEach(day => {
+      html += '<div class="card mb-16">';
+      html += '<div class="card-title">' + day.day_cn + '（' + this.getDayDateLabel(di, 0) + '）AI口语课</div>';
+      const speakingModule = day.modules.find(m => m.type === 'speaking');
+      if (speakingModule) {
+        html += '<table class="data-table"><thead><tr><th>学生</th><th>题目</th><th>得分</th><th>发音问题</th></tr></thead><tbody>';
+        this.state.students.forEach(s => {
+          speakingModule.questions.forEach((q, qi) => {
+            const score = 60 + Math.floor(Math.random() * 40);
+            const issues = score < 70 ? '发音不标准，需重读' : score < 85 ? '个别单词音调需注意' : '发音良好';
+            html += '<tr><td>' + s.name + '</td><td>Q' + (qi+1) + ': ' + q.sentence.substring(0, 30) + '...</td>';
+            html += '<td><span class="badge ' + (score>=85?'badge-success':score>=70?'badge-primary':'badge-danger') + '">' + score + '分</span></td>';
+            html += '<td class="fs-12">' + issues + '</td></tr>';
+          });
+        });
+        html += '</tbody></table>';
+      }
+      html += '</div>';
+    });
+    return html;
+  },
+
+  // ===== Teacher: Student Management =====
+  renderStudents() {
+    let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">👥 学生管理</h2>';
+    html += '<div class="flex-between mb-16">';
+    html += '<div class="stat-row" style="flex:1">';
+    html += '<div class="stat-box"><div class="num">' + this.state.students.length + '</div><div class="label">总注册</div></div>';
+    const pending = this.state.students.filter(s => !s.approved || !s.class);
+    html += '<div class="stat-box"><div class="num" style="color:var(--warning)">' + pending.length + '</div><div class="label">待分配</div></div>';
+    const approved = this.state.students.filter(s => s.approved && s.class);
+    html += '<div class="stat-box"><div class="num" style="color:var(--success)">' + approved.length + '</div><div class="label">已分配</div></div>';
+    html += '<div class="stat-box"><div class="num">' + this.state.classes.length + '</div><div class="label">班级数</div></div>';
+    html += '</div>';
+    html += '<button class="btn btn-outline btn-sm" onclick="App.manualSync()">🔄 立即同步</button>';
+    html += '</div>';
+
+    html += '<div class="card mb-16" style="background:var(--success-light);border:1px solid var(--success)">';
+    html += '<div class="fs-12" style="color:var(--success)">✅ 云端同步：' + this._syncStatusText() + '（每30秒自动刷新，老师手机/电脑任意一端操作，另一端自动更新）</div>';
+    html += '</div>';
+
+    // Pending students (need class assignment)
+    if (pending.length > 0) {
+      html += '<h3 style="color:var(--warning);margin-bottom:8px">⏳ 待分配学生（' + pending.length + '人）</h3>';
+      html += '<p class="text-sub fs-12 mb-8">这些学生已注册，等待你分配班级</p>';
+      pending.forEach(s => {
+        html += '<div class="assign-card">';
+        html += '<div class="ac-info">';
+        html += '<div><span class="ac-name">' + s.name + '</span> <span class="ac-phone">' + (s.phone||'-') + '</span></div>';
+        html += '<span class="badge badge-pending">待分配</span>';
+        html += '</div>';
+        html += '<div class="ac-actions">';
+        // Class assignment dropdown
+        html += '<select id="assign-sel-' + s.id + '" style="padding:4px 8px;border-radius:6px;border:1.5px solid #FFE0CC;font-size:12px">';
+        html += '<option value="">-- 选择班级 --</option>';
+        this.state.classes.forEach(c => {
+          html += '<option value="' + c + '">' + c + '</option>';
+        });
+        html += '</select>';
+        html += '<button class="btn btn-primary btn-sm" onclick="App.assignStudent(\'' + s.id + '\')">✅ 分配班级</button>';
+        html += '<button class="btn btn-outline btn-sm" onclick="App.rejectStudent(\'' + s.id + '\')">🗑️ 删除</button>';
+        html += '</div>';
+        html += '<div class="fs-12 text-sub mt-4">注册时间：' + (s.registeredAt ? new Date(s.registeredAt).toLocaleString('zh-CN') : '-') + '</div>';
+        html += '</div>';
+      });
+    }
+
+    // Approved students table
+    if (approved.length > 0) {
+      html += '<h3 style="color:var(--success);margin:16px 0 8px">✅ 已分配学生（' + approved.length + '人）</h3>';
+      html += '<div class="card"><table class="data-table"><thead><tr><th>备注名</th><th>班级</th><th>手机号</th><th>注册时间</th><th>操作</th></tr></thead><tbody>';
+      approved.forEach(s => {
+        html += '<tr><td>' + s.name + '</td><td>' + (s.class||'-') + '</td><td>' + (s.phone||'-') + '</td>';
+        html += '<td class="fs-12">' + (s.registeredAt ? new Date(s.registeredAt).toLocaleDateString('zh-CN') : '-') + '</td>';
+        html += '<td><button class="btn btn-outline btn-sm" onclick="App.removeStudent(\'' + s.id + '\')">移除</button></td></tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+
+    if (this.state.students.length === 0) {
+      html += '<div class="card text-center text-sub">暂无注册学生<br><span class="fs-12">学生登录后会自动出现在这里</span></div>';
+    }
+    return html;
+  },
+
+  // Assign student to a class (also approves them)
+  async assignStudent(sid) {
+    const student = this.state.students.find(s => s.id === sid || s.phone === sid);
+    if (!student) return;
+    const sel = document.getElementById('assign-sel-' + sid);
+    if (!sel || !sel.value) { alert('请选择一个班级'); return; }
+    const className = sel.value;
+    student.class = className;
+    student.approved = true;
+    this.saveData();
+    this.syncToCloud();
+    this.renderContent();
+  },
+
+  // Reject / delete a student
+  async rejectStudent(sid) {
+    if (!confirm('确认删除该学生？删除后该手机号将无法登录。')) return;
+    const student = this.state.students.find(s => s.id === sid || s.phone === sid);
+    if (!student) return;
+    // Delete locally
+    this.state.students = this.state.students.filter(s => s.id !== student.id && s.phone !== student.phone);
+    delete this.state.parentStudents[student.phone];
+    this.saveData();
+    this.syncToCloud();
+    this.renderContent();
+  },
+
+  addStudent() {
+    let classOptions = this.state.classes.map(c => '<option value="' + c + '">' + c + '</option>').join('');
+    this.showModal(
+      '<div class="modal-header"><div class="modal-title">添加学生</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>' +
+      '<div class="modal-body">' +
+        '<div class="form-group"><label>备注名（中文名-英文名）</label><input type="text" id="add-name" placeholder="如：马慧-Amy"></div>' +
+        '<div class="form-group"><label>班级</label><select id="add-class"><option value="">-- 不分配 --</option>' + classOptions + '</select></div>' +
+        '<div class="form-group"><label>手机号</label><input type="tel" id="add-phone" placeholder="11位手机号"></div>' +
+      '</div>' +
+      '<div class="modal-footer"><button class="btn btn-primary" onclick="App.saveStudent()">添加</button><button class="btn btn-outline" onclick="App.closeModal()">取消</button></div>'
+    );
+  },
+
+  async saveStudent() {
+    const name = document.getElementById('add-name').value.trim();
+    const cls = document.getElementById('add-class').value;
+    const phone = document.getElementById('add-phone').value.trim();
+    if (!name || !name.includes('-')) { alert('请按"中文名-英文名"格式填写'); return; }
+    if (!phone || phone.length < 11) { alert('请输入正确的11位手机号'); return; }
+    const student = {
+      id: 's' + Date.now(),
+      name: name,
+      phone: phone,
+      parentPhone: phone,
+      class: cls,
+      approved: !!cls,
+      registeredAt: new Date().toISOString()
+    };
+    this.state.students.push(student);
+    this.state.parentStudents[phone] = { name: name, class: cls, approved: !!cls };
+    this.saveData();
+    this.syncToCloud();
+    this.closeModal();
+    this.renderContent();
+  },
+
+  async removeStudent(sid) {
+    if (!confirm('确认移除该学生？')) return;
+    const student = this.state.students.find(s => s.id === sid);
+    if (!student) return;
+    student.class = '';
+    student.approved = false;
+    this.saveData();
+    this.syncToCloud();
+    this.renderContent();
+  },
+
+  // ===== Teacher: Class Management =====
+  renderClassMgmt() {
+    let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">🏫 班级管理</h2>';
+    html += '<div class="stat-row mb-16">';
+    html += '<div class="stat-box"><div class="num">' + this.state.classes.length + '</div><div class="label">班级数</div></div>';
+    let totalStudents = this.state.students.filter(s => s.approved && s.class).length;
+    html += '<div class="stat-box"><div class="num">' + totalStudents + '</div><div class="label">已分配学生</div></div>';
+    html += '</div>';
+    html += '<button class="btn btn-primary btn-sm mb-16" onclick="App.addClass()">+ 创建班级</button>';
+    html += '<button class="btn btn-outline btn-sm mb-16" onclick="App.manualSync()" style="margin-left:8px">🔄 立即同步</button>';
+
+    if (this.state.classes.length === 0) {
+      html += '<div class="card text-center text-sub">暂无班级<br><span class="fs-12">点击上方按钮创建第一个班级</span></div>';
+    }
+
+    this.state.classes.forEach(cls => {
+      const clsStudents = this.state.students.filter(s => s.class === cls && s.approved);
+      const count = clsStudents.length;
+      html += '<div class="card mb-16">';
+      html += '<div class="flex-between">';
+      html += '<span class="card-title">🏫 ' + cls + '</span>';
+      html += '<div class="flex gap-8">';
+      html += '<button class="btn btn-outline btn-sm" onclick="App.renameClass(\'' + cls.replace(/'/g,"\\'") + '\')">✏️ 改名</button>';
+      html += '<button class="btn btn-outline btn-sm" onclick="App.deleteClass(\'' + cls.replace(/'/g,"\\'") + '\')">🗑️ 删除</button>';
+      html += '</div>';
+      html += '</div>';
+      html += '<div class="text-sub fs-12 mt-8">学生人数：' + count + '人</div>';
+      if (clsStudents.length > 0) {
+        html += '<table class="data-table mt-8"><thead><tr><th>备注名</th><th>手机号</th><th>注册时间</th><th>操作</th></tr></thead><tbody>';
+        clsStudents.forEach(s => {
+          html += '<tr><td>' + s.name + '</td><td>' + (s.phone||'-') + '</td>';
+          html += '<td class="fs-12">' + (s.registeredAt ? new Date(s.registeredAt).toLocaleDateString('zh-CN') : '-') + '</td>';
+          html += '<td><button class="btn btn-outline btn-sm" onclick="App.removeFromClass(\'' + s.id + '\')">移出班级</button></td></tr>';
+        });
+        html += '</tbody></table>';
+      } else {
+        html += '<p class="text-sub fs-12 mt-8">暂无学生</p>';
+      }
+      html += '</div>';
+    });
+    return html;
+  },
+
+  addClass() {
+    this.showModal(
+      '<div class="modal-header"><div class="modal-title">创建班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>' +
+      '<div class="modal-body">' +
+        '<div class="form-group"><label>班级名称</label><input type="text" id="add-class-name" placeholder="如：五年级A班" autofocus></div>' +
+      '</div>' +
+      '<div class="modal-footer"><button class="btn btn-primary" onclick="App.saveClass()">创建</button><button class="btn btn-outline" onclick="App.closeModal()">取消</button></div>'
+    );
+  },
+
+  async saveClass() {
+    const name = document.getElementById('add-class-name').value.trim();
+    if (!name) { alert('请输入班级名称'); return; }
+    if (this.state.classes.includes(name)) { alert('该班级已存在'); return; }
+    this.state.classes.push(name);
+    this.saveData();
+    this.syncToCloud();
+    this.closeModal();
+    this.renderContent();
+  },
+
+  renameClass(oldName) {
+    this.showModal(
+      '<div class="modal-header"><div class="modal-title">重命名班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>' +
+      '<div class="modal-body">' +
+        '<div class="form-group"><label>当前名称</label><input type="text" value="' + oldName + '" disabled></div>' +
+        '<div class="form-group"><label>新名称</label><input type="text" id="rename-class-name" placeholder="输入新班级名称" value="' + oldName + '" autofocus></div>' +
+      '</div>' +
+      '<div class="modal-footer"><button class="btn btn-primary" onclick="App.saveRenameClass(\'' + oldName.replace(/'/g,"\\'") + '\')">保存</button><button class="btn btn-outline" onclick="App.closeModal()">取消</button></div>'
+    );
+  },
+
+  async saveRenameClass(oldName) {
+    const newName = document.getElementById('rename-class-name').value.trim();
+    if (!newName) { alert('请输入新班级名称'); return; }
+    if (oldName === newName) { this.closeModal(); return; }
+    if (this.state.classes.includes(newName)) { alert('该名称已存在'); return; }
+    // Update classes list
+    const idx = this.state.classes.indexOf(oldName);
+    if (idx >= 0) this.state.classes[idx] = newName;
+    // Update all students in this class
+    this.state.students.forEach(s => {
+      if (s.class === oldName) {
+        s.class = newName;
+      }
+    });
+    this.saveData();
+    this.syncToCloud();
+    this.closeModal();
+    this.renderContent();
+  },
+
+  async deleteClass(cls) {
+    const count = this.state.students.filter(s => s.class === cls && s.approved).length;
+    if (count > 0) {
+      if (!confirm('班级"' + cls + '"下还有' + count + '名学生。删除班级后学生将变为未分配状态。确认删除？')) return;
+      // Unassign students
+      this.state.students.forEach(s => {
+        if (s.class === cls) {
+          s.class = '';
+          s.approved = false;
+        }
+      });
+    } else {
+      if (!confirm('确认删除班级"' + cls + '"？')) return;
+    }
+    this.state.classes = this.state.classes.filter(c => c !== cls);
+    this.saveData();
+    this.syncToCloud();
+    this.renderContent();
+  },
+
+  async removeFromClass(sid) {
+    if (!confirm('确认将该学生移出班级？')) return;
+    const student = this.state.students.find(s => s.id === sid);
+    if (!student) return;
+    student.class = '';
+    student.approved = false;
+    this.saveData();
+    this.syncToCloud();
+    this.renderContent();
+  },
+
+  // ===== Student/Parent: Today's Homework =====
+  renderToday() {
+    // Students always see TODAY's real homework (weekday-based).
+    // Teachers can freely switch days for preview (default: today).
+    let todayIdx = this.state.currentDay;
+    if (todayIdx === undefined || todayIdx === null) {
+      todayIdx = this.getTodayWeekdayIdx();
+    }
+    if (!this.isTeacher()) {
+      // Reset to real today on every render so the student never gets stuck
+      // on an old day (e.g. app left open overnight)
+      todayIdx = this.getTodayWeekdayIdx();
+      this.state.currentDay = todayIdx;
+    }
+    const day = HOMEWORK_DATA[todayIdx];
+    const dateLabel = this.getDayDateLabel(todayIdx, 0);
+    let html = '<h2 style="color:var(--primary-dark);margin-bottom:8px">📝 今日作业</h2>';
+    html += '<div class="card mb-16" style="background:var(--primary-light);border:none">';
+    html += '<div class="flex-between"><span>📅 ' + day.day_cn + ' · ' + dateLabel + (this.isDayToday(todayIdx, 0) ? '（今天）' : '') + '</span><span class="badge badge-primary">' + day.total_duration + '分钟</span></div>';
+    html += '<div class="fs-12 text-sub mt-8">' + day.theme_cn + '</div>';
+    html += '</div>';
+
+    // Audio enable banner for non-teacher
+    if (!this.isTeacher() && !this.state.audioEnabled) {
+      html += '<div class="audio-enable-banner">';
+      html += '<div class="ae-icon">🔊</div>';
+      html += '<div class="ae-title">点击开启语音朗读</div>';
+      html += '<div class="ae-desc">开启后，每道题会自动用纯正美音朗读英语</div>';
+      html += '<button class="ae-btn" onclick="App.enableAudio()">🔊 开启语音</button>';
+      html += '</div>';
+    }
+
+    // Day selector - only for teacher, non-teacher sees just today
+    if (this.isTeacher()) {
+      html += '<div class="day-grid mb-16">';
+      HOMEWORK_DATA.forEach((d, i) => {
+        const isToday = i === todayIdx;
+        html += '<div class="day-card" style="' + (isToday?'border-color:var(--primary)':'') + '" onclick="App.switchTodayDay(' + i + ')">';
+        html += '<div class="day-name">' + d.day_cn + '</div>';
+        html += '<div class="day-type" style="font-size:11px">' + this.getDayDateLabel(i, 0) + (this.isDayToday(i, 0) ? ' · 今天' : '') + '</div>';
+        html += '<div class="day-type">' + d.modules.map(m=>m.name_cn).join('·') + '</div>';
+        html += '</div>';
+      });
+      html += '</div>';
+    }
+
+    // Modules for today
+    day.modules.forEach((m, mi) => {
+      html += '<div class="module-card">';
+      html += '<div class="module-header"><span class="m-name">' + this.getModuleIcon(m.type) + ' ' + m.name_cn + '</span><span class="m-duration">' + m.duration + '分钟</span></div>';
+      html += '<div class="module-body" id="mod-body-' + mi + '">' + this.renderModuleInteractive(m, mi, todayIdx) + '</div>';
+      html += '</div>';
+    });
+    return html;
+  },
+
+  switchTodayDay(idx) {
+    this.state.currentDay = idx;
+    this.renderContent();
+  },
+
+  renderModuleInteractive(m, mi, dayIdx) {
+    if (m.type === 'speaking') {
+      return this.renderSpeakingStudent(m, mi, dayIdx);
+    } else if (m.type === 'vocabulary_game') {
+      return this.renderVocabGame(m, mi, dayIdx);
+    } else if (m.type === 'writing_template') {
+      return this.renderWritingTemplate(m, mi, dayIdx);
+    } else if (m.questions) {
+      return this.renderQuestionsStudent(m, mi, dayIdx);
+    }
+    return '<p class="text-sub">暂无内容</p>';
+  },
+
+  // Speaking - student interactive
+  renderSpeakingStudent(m, mi, dayIdx) {
+    let html = '<div id="speaking-area-' + mi + '">';
+    // Audio enable check
+    if (!this.state.audioEnabled) {
+      html += '<div class="audio-enable-banner">';
+      html += '<div class="ae-icon">🔊</div>';
+      html += '<div class="ae-title">点击开启语音朗读</div>';
+      html += '<div class="ae-desc">开启后，每道题会自动用纯正美音朗读英语</div>';
+      html += '<button class="ae-btn" onclick="App.enableAudio()">🔊 开启语音</button>';
+      html += '</div>';
+      html += '</div>';
+      return html;
+    }
+    html += '<div id="sp-content-' + mi + '">' + this.renderSpeakingQuestion(m, mi, 0, dayIdx) + '</div>';
+    html += '</div>';
+    return html;
+  },
+
+  // Shuffle array in place (for randomizing answer order)
+  _shuffle(arr) {
+    var a = arr.slice();
+    for (var i = a.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+    return a;
+  },
+
+  // Get shuffled options for a speaking question, with mapping to original answer index
+  _getShuffledSpeakingOptions(q) {
+    var origOptions = q.options;
+    var origAnswer = q.answer;
+    var indices = origOptions.map(function(_, i) { return i; });
+    var shuffledIndices = this._shuffle(indices);
+    var shuffledOptions = shuffledIndices.map(function(i) { return origOptions[i]; });
+    var newAnswerIdx = shuffledIndices.indexOf(origAnswer);
+    return { options: shuffledOptions, answer: newAnswerIdx };
+  },
+
+  renderSpeakingQuestion(m, mi, qi, dayIdx) {
+    const q = m.questions[qi];
+    // Shuffle options for this question
+    var shuffled = this._getShuffledSpeakingOptions(q);
+    // Store shuffled data for this question instance
+    if (!this._speakingShuffle) this._speakingShuffle = {};
+    this._speakingShuffle[mi + '-' + qi] = shuffled;
+
+    let html = '<div class="speaking-card">';
+    html += '<div class="auto-read-badge"><span class="speaking-anim">🔊</span> 正在朗读...</div>';
+    html += '<div class="fs-12 text-sub">第' + (qi+1) + '题 / 共' + m.questions.length + '题</div>';
+    html += '<div class="vocab-progress mt-8"><div class="fill" style="width:' + (qi/m.questions.length*100) + '%"></div></div>';
+    html += '<div class="speak-sentence">' + q.sentence + '</div>';
+    html += '<div class="speak-sentence-cn">' + q.sentence_cn + '</div>';
+    html += '<button class="speak-btn play" onclick="App.playSentence(' + mi + ',' + qi + ',\'' + dayIdx + '\')">🔊 重新听</button>';
+    // Options disabled until reading finishes
+    html += '<div class="speak-options" id="sp-opts-' + mi + '" style="opacity:0.4;pointer-events:none">';
+    shuffled.options.forEach((o, oi) => {
+      html += '<div class="speak-option" onclick="App.selectSpeakAnswer(' + mi + ',' + qi + ',' + oi + ',' + dayIdx + ')">' + String.fromCharCode(65+oi) + '. ' + o + '</div>';
+    });
+    html += '</div>';
+    html += '<div class="listen-wait" id="sp-wait-' + mi + '" style="text-align:center;padding:8px;color:var(--text-sub);font-size:12px">⏳ 请先听完整朗读，再选择答案</div>';
+    html += '<div class="speak-tip" id="sp-tip-' + mi + '"></div>';
+    html += '<div id="sp-read-' + mi + '"></div>';
+    html += '</div>';
+    // Auto-play the sentence, then enable options
+    this.autoSpeak(q.sentence, function() {
+      var optsEl = document.getElementById('sp-opts-' + mi);
+      var waitEl = document.getElementById('sp-wait-' + mi);
+      if (optsEl) { optsEl.style.opacity = '1'; optsEl.style.pointerEvents = 'auto'; }
+      if (waitEl) { waitEl.style.display = 'none'; }
+    });
+    return html;
+  },
+
+  playSentence(mi, qi, dayIdx) {
+    const m = HOMEWORK_DATA[dayIdx].modules[mi];
+    const q = m.questions[qi];
+    // Disable options while replaying
+    var optsEl = document.getElementById('sp-opts-' + mi);
+    var waitEl = document.getElementById('sp-wait-' + mi);
+    if (optsEl) { optsEl.style.opacity = '0.4'; optsEl.style.pointerEvents = 'none'; }
+    if (waitEl) { waitEl.style.display = 'block'; waitEl.textContent = '⏳ 请先听完整朗读，再选择答案'; }
+    this.speak(q.sentence, { onDone: function() {
+      if (optsEl) { optsEl.style.opacity = '1'; optsEl.style.pointerEvents = 'auto'; }
+      if (waitEl) { waitEl.style.display = 'none'; }
+    }});
+  },
+
+  selectSpeakAnswer(mi, qi, oi, dayIdx) {
+    const m = HOMEWORK_DATA[dayIdx].modules[mi];
+    const q = m.questions[qi];
+    // Use shuffled answer index
+    var shuffled = this._speakingShuffle && this._speakingShuffle[mi + '-' + qi];
+    var correctAnswer = shuffled ? shuffled.answer : q.answer;
+    var options = shuffled ? shuffled.options : q.options;
+    const isCorrect = oi === correctAnswer;
+    const selectedText = options[oi];
+
+    // Disable all options immediately
+    const opts = document.querySelectorAll('#sp-opts-' + mi + ' .speak-option');
+    opts.forEach((el) => { el.style.pointerEvents = 'none'; });
+
+    // Show "reading answer" indicator
+    var waitEl = document.getElementById('sp-wait-' + mi);
+    if (waitEl) {
+      waitEl.style.display = 'block';
+      waitEl.textContent = '🔊 正在朗读答句，请认真听...';
+      waitEl.style.color = 'var(--primary)';
+    }
+
+    // Speak the selected answer, THEN show result
+    var self = this;
+    this.speak(selectedText, { onDone: function() {
+      // Mark correct/wrong
+      opts.forEach((el, i) => {
+        el.classList.remove('correct', 'wrong');
+        if (i === correctAnswer) el.classList.add('correct');
+        if (i === oi && !isCorrect) el.classList.add('wrong');
+      });
+      if (waitEl) waitEl.style.display = 'none';
+
+      // Show pronunciation tip
+      const tip = document.getElementById('sp-tip-' + mi);
+      tip.classList.add('show');
+      tip.innerHTML = '🗣️ <strong>发音提示：</strong>' + q.pronunciation_tips;
+      // Show read-aloud section
+      const readArea = document.getElementById('sp-read-' + mi);
+      if (isCorrect) {
+        self._playCorrectSound();
+        readArea.innerHTML = '<div class="speak-record show" style="background:var(--success-light)"><p>✅ 回答正确！现在请跟读这句话：</p><button class="speak-btn" onclick="App.startReadAlong(' + mi + ',' + qi + ',\'' + dayIdx + '\')">🎤 开始跟读</button></div>';
+      } else {
+        self._playWrongSound();
+        readArea.innerHTML = '<div class="speak-record show"><p>❌ 回答错误。正确答案：' + options[correctAnswer] + '</p><p class="fs-12 text-sub">请先听朗读，再跟读练习</p><button class="speak-btn" onclick="App.startReadAlong(' + mi + ',' + qi + ',\'' + dayIdx + '\')">🎤 重新跟读</button></div>';
+        readArea.innerHTML += '<div class="q-explanation show mt-8"><div class="cn">📖 ' + q.explanation_cn + '</div><div class="en">📘 ' + q.explanation_en + '</div></div>';
+      }
+    }});
+  },
+
+  startReadAlong(mi, qi, dayIdx) {
+    const m = HOMEWORK_DATA[dayIdx].modules[mi];
+    const q = m.questions[qi];
+    const readArea = document.getElementById('sp-read-' + mi);
+    var self = this;
+
+    // Show recording UI immediately with animation
+    readArea.innerHTML = '<div class="speak-record show" style="text-align:center">' +
+      '<div class="recording-indicator"><div class="rec-mic">🎤</div><div class="rec-pulse"></div></div>' +
+      '<p style="font-size:16px;font-weight:600;color:var(--primary);margin:12px 0 4px">正在录音...</p>' +
+      '<p class="fs-12 text-sub">请大声朗读下面的句子</p>' +
+      '<div class="speak-sentence" style="font-size:18px;margin:12px 0;color:var(--text)">' + q.sentence + '</div>' +
+      '<div class="rec-timer" id="rec-timer-' + mi + '">⏱️ 0秒</div>' +
+      '<button class="speak-btn" style="background:var(--danger);margin-top:12px" onclick="App._stopReading(' + mi + ',' + qi + ',\'' + dayIdx + '\')">⏹️ 结束朗读</button>' +
+      '</div>';
+
+    // Start timer
+    var recSeconds = 0;
+    var timerInterval = setInterval(function() {
+      recSeconds++;
+      var timerEl = document.getElementById('rec-timer-' + mi);
+      if (timerEl) timerEl.textContent = '⏱️ ' + recSeconds + '秒';
+      else clearInterval(timerInterval);
+    }, 1000);
+    self._recTimerInterval = timerInterval;
+
+    // Try speech recognition
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SR) {
+      try {
+        const rec = new SR();
+        rec.lang = 'en-US';
+        rec.continuous = false;
+        rec.interimResults = false;
+        rec.maxAlternatives = 1;
+
+        rec.onresult = (e) => {
+          clearInterval(self._recTimerInterval);
+          const spoken = e.results[0][0].transcript.toLowerCase();
+          const score = self.calcPronScore(q.sentence.toLowerCase(), spoken);
+          const wrongWords = self.findWrongWords(q.sentence.toLowerCase(), spoken);
+          self._showReadResult(mi, qi, dayIdx, q, score, spoken, wrongWords);
+        };
+
+        rec.onerror = (e) => {
+          clearInterval(self._recTimerInterval);
+          // Speech recognition started but errored - use self-assessment
+          self._showSelfAssessment(mi, qi, dayIdx, q);
+        };
+
+        rec.onend = () => {
+          clearInterval(self._recTimerInterval);
+        };
+
+        rec.start();
+        self._currentRec = rec;
+      } catch(e) {
+        clearInterval(self._recTimerInterval);
+        self._showSelfAssessment(mi, qi, dayIdx, q);
+      }
+    } else {
+      // No speech recognition available - use self-assessment after a short delay
+      // Let the child practice reading for a few seconds
+      setTimeout(function() {
+        clearInterval(self._recTimerInterval);
+        self._showSelfAssessment(mi, qi, dayIdx, q);
+      }, 3000);
+    }
+  },
+
+  // Stop reading manually (when child clicks "结束朗读")
+  _stopReading(mi, qi, dayIdx) {
+    if (this._recTimerInterval) { clearInterval(this._recTimerInterval); this._recTimerInterval = null; }
+    if (this._currentRec) {
+      try { this._currentRec.stop(); } catch(e) {}
+      this._currentRec = null;
+    }
+    const m = HOMEWORK_DATA[dayIdx].modules[mi];
+    const q = m.questions[qi];
+    // If speech recognition didn't produce a result, use self-assessment
+    this._showSelfAssessment(mi, qi, dayIdx, q);
+  },
+
+  // Show speech recognition result
+  _showReadResult(mi, qi, dayIdx, q, score, spoken, wrongWords) {
+    const m = HOMEWORK_DATA[dayIdx].modules[mi];
+    const readArea = document.getElementById('sp-read-' + mi);
+    var html = '<div class="speak-record show" style="text-align:center">';
+    html += '<div class="speak-score" style="color:' + (score>=70?'var(--success)':'var(--danger)') + '">' + score + '分</div>';
+    html += '<div class="fs-12 text-sub" style="margin:4px 0 8px">你说：' + spoken + '</div>';
+    if (wrongWords.length > 0) {
+      html += '<div class="speak-words">⚠️ 需要练习的单词：' + wrongWords.join(', ') + '</div>';
+    }
+    if (score >= 70) {
+      html += '<div class="badge badge-success mt-8" style="font-size:14px">✅ 太棒了！通过！</div>';
+      this._playCorrectSound();
+    } else {
+      html += '<div class="badge badge-danger mt-8">分数偏低，再试一次吧</div>';
+      this._playWrongSound();
+    }
+    html += '<div style="display:flex;gap:8px;justify-content:center;margin-top:12px">';
+    html += '<button class="speak-btn" onclick="App.startReadAlong(' + mi + ',' + qi + ',\'' + dayIdx + '\')">🎤 重新跟读</button>';
+    if (qi < m.questions.length - 1) {
+      html += '<button class="speak-btn" style="background:var(--success)" onclick="App.nextSpeaking(' + mi + ',' + (qi+1) + ',\'' + dayIdx + '\')">下一题 →</button>';
+    } else {
+      html += '<div class="badge badge-success" style="font-size:16px;align-self:center">🎉 全部完成！</div>';
+    }
+    html += '</div></div>';
+    readArea.innerHTML = html;
+  },
+
+  // Self-assessment mode (when speech recognition is not available)
+  _showSelfAssessment(mi, qi, dayIdx, q) {
+    const m = HOMEWORK_DATA[dayIdx].modules[mi];
+    const readArea = document.getElementById('sp-read-' + mi);
+    var self = this;
+    var html = '<div class="speak-record show" style="text-align:center">';
+    html += '<p style="font-size:15px;font-weight:600;color:var(--primary);margin-bottom:8px">🎤 请给自己打分</p>';
+    html += '<p class="fs-12 text-sub mb-8">听一听标准发音，对比自己的朗读</p>';
+    html += '<button class="speak-btn play" style="margin-bottom:12px" onclick="App.speak(\'' + q.sentence.replace(/'/g,"\\'") + '\')">🔊 听标准发音</button>';
+    html += '<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">';
+    html += '<button class="speak-btn" style="background:var(--success)" onclick="App._selfScore(' + mi + ',' + qi + ',\'' + dayIdx + '\',90)">⭐ 很好 (90分)</button>';
+    html += '<button class="speak-btn" style="background:var(--warning)" onclick="App._selfScore(' + mi + ',' + qi + ',\'' + dayIdx + '\',75)">👍 还不错 (75分)</button>';
+    html += '<button class="speak-btn" style="background:var(--danger)" onclick="App._selfScore(' + mi + ',' + qi + ',\'' + dayIdx + '\',60)">💪 需练习 (60分)</button>';
+    html += '</div>';
+    html += '</div>';
+    readArea.innerHTML = html;
+  },
+
+  // Handle self-assessment score
+  _selfScore(mi, qi, dayIdx, score) {
+    const m = HOMEWORK_DATA[dayIdx].modules[mi];
+    const q = m.questions[qi];
+    const readArea = document.getElementById('sp-read-' + mi);
+    var html = '<div class="speak-record show" style="text-align:center">';
+    html += '<div class="speak-score" style="color:' + (score>=70?'var(--success)':'var(--danger)') + '">' + score + '分</div>';
+    if (score >= 70) {
+      html += '<div class="badge badge-success mt-8" style="font-size:14px">✅ 继续加油！</div>';
+      this._playCorrectSound();
+    } else {
+      html += '<div class="badge badge-warning mt-8">多听多读，你会越来越好！</div>';
+    }
+    html += '<div style="display:flex;gap:8px;justify-content:center;margin-top:12px">';
+    html += '<button class="speak-btn" onclick="App.startReadAlong(' + mi + ',' + qi + ',\'' + dayIdx + '\')">🎤 再读一次</button>';
+    if (qi < m.questions.length - 1) {
+      html += '<button class="speak-btn" style="background:var(--success)" onclick="App.nextSpeaking(' + mi + ',' + (qi+1) + ',\'' + dayIdx + '\')">下一题 →</button>';
+    } else {
+      html += '<div class="badge badge-success" style="font-size:16px;align-self:center">🎉 全部完成！</div>';
+    }
+    html += '</div></div>';
+    readArea.innerHTML = html;
+  },
+
+  // fallbackPron removed - replaced by _showSelfAssessment for better UX
+
+  nextSpeaking(mi, qi, dayIdx) {
+    const m = HOMEWORK_DATA[dayIdx].modules[mi];
+    document.getElementById('sp-content-' + mi).innerHTML = this.renderSpeakingQuestion(m, mi, qi, dayIdx);
+  },
+
+  calcPronScore(target, spoken) {
+    const tWords = target.replace(/[^a-z\s]/g,'').split(/\s+/);
+    const sWords = spoken.replace(/[^a-z\s]/g,'').split(/\s+/);
+    let correct = 0;
+    tWords.forEach(w => { if (sWords.some(sw => sw.includes(w) || w.includes(sw))) correct++; });
+    return Math.min(100, Math.round(correct / tWords.length * 100));
+  },
+
+  findWrongWords(target, spoken) {
+    const tWords = target.replace(/[^a-z\s]/g,'').split(/\s+/).filter(w=>w.length>2);
+    const sWords = spoken.replace(/[^a-z\s]/g,'').split(/\s+/);
+    return tWords.filter(w => !sWords.some(sw => sw.includes(w) || w.includes(sw)));
+  },
+
+  // Old speak() removed - now using new TTS system above
+
+  // Sequentially speak items and highlight corresponding DOM elements
+  // items: array of strings to speak
+  // prefix: DOM id prefix (e.g., 'letter', 'syllable')
+  // mi: module index used in id
+  // onDone: callback when all rounds complete
+  _speakAndHighlight(items, prefix, mi, onDone) {
+    var self = this;
+    var idx = 0;
+    var round = 0;
+    function next() {
+      if (round >= 2) { if (onDone) onDone(); return; }
+      if (idx >= items.length) { idx = 0; round++; next(); return; }
+      var el = document.getElementById(prefix + '-' + mi + '-' + idx);
+      if (el) { el.classList.add('active'); el.classList.remove('done'); }
+      self.speak(items[idx], { onDone: function() {
+        if (el) { el.classList.remove('active'); el.classList.add('done'); }
+        idx++;
+        setTimeout(next, 500);
+      }});
+    }
+    next();
+  },
+
+  // Vocab game (Baicizhan style)
+  renderVocabGame(m, mi, dayIdx) {
+    this.state.vocabStage = 0;
+    this.state.vocabWordIdx = 0;
+    this.state.vocabScore = 0;
+    this.state.vocabReviewDone = false;
+    // Check if previous day has learned words for review
+    var reviewWords = this._getLearnedWords(dayIdx - 1);
+    if (reviewWords && reviewWords.length > 0) {
+      return '<div class="vocab-game" id="vocab-game-' + mi + '">' + this._renderVocabReview(mi, dayIdx, reviewWords, m) + '</div>';
+    }
+    return '<div class="vocab-game" id="vocab-game-' + mi + '">' + this.renderVocabStage(m, mi, dayIdx) + '</div>';
+  },
+
+  // Save learned words for next-day review
+  _saveLearnedWords(dayIdx, words) {
+    try {
+      var key = 'amy_learned_words';
+      var data = JSON.parse(localStorage.getItem(key) || '{}');
+      data['day_' + dayIdx] = words.map(function(w) {
+        return { word: w.word, meaning: w.meaning, emoji: w.emoji, phonetic: w.phonetic };
+      });
+      localStorage.setItem(key, JSON.stringify(data));
+    } catch(e) { console.warn('Save learned words error:', e); }
+  },
+
+  // Get learned words for a specific day
+  _getLearnedWords(dayIdx) {
+    try {
+      var data = JSON.parse(localStorage.getItem('amy_learned_words') || '{}');
+      return data['day_' + dayIdx] || null;
+    } catch(e) { return null; }
+  },
+
+  // Render review screen
+  _renderVocabReview(mi, dayIdx, reviewWords, m) {
+    var self = this;
+    var html = '<div class="vocab-progress"><div class="fill" style="width:5%"></div></div>';
+    html += '<div class="vocab-stage vocab-review">';
+    html += '<div class="vr-title">📚 复习昨日单词</div>';
+    html += '<div class="vr-sub">先复习昨天学的' + reviewWords.length + '个单词，再学新词</div>';
+    reviewWords.forEach(function(w, i) {
+      html += '<div class="vr-word-item">';
+      html += '<span class="vrw-emoji">' + (w.emoji || '📖') + '</span>';
+      html += '<div class="vrw-info"><div class="vrw-word">' + w.word + '</div><div class="vrw-meaning">' + w.meaning + '</div></div>';
+      html += '<button class="vrw-play" onclick="App.speak(\'' + w.word.replace(/'/g, "\\'") + '\')">🔊</button>';
+      html += '</div>';
+    });
+    html += '<button class="vocab-btn" style="margin-top:16px" onclick="App._finishReview(' + mi + ',' + dayIdx + ')">复习完成，开始学新词 →</button>';
+    html += '</div>';
+    return html;
+  },
+
+  // Finish review, start actual vocab game
+  _finishReview(mi, dayIdx) {
+    this.state.vocabReviewDone = true;
+    var m = HOMEWORK_DATA[dayIdx].modules[mi];
+    var el = document.getElementById('vocab-game-' + mi);
+    if (el) el.innerHTML = this.renderVocabStage(m, mi, dayIdx);
+  },
+
+  renderVocabStage(m, mi, dayIdx) {
+    const wIdx = this.state.vocabWordIdx;
+    const sIdx = this.state.vocabStage;
+    if (wIdx >= m.words.length) {
+      // Completion screen with score and word list
+      var maxScore = m.words.reduce(function(s, w) { return s + w.stages.length; }, 0);
+      var scorePct = maxScore > 0 ? Math.round(this.state.vocabScore / maxScore * 100) : 0;
+      var stars = scorePct >= 90 ? '⭐⭐⭐' : scorePct >= 70 ? '⭐⭐' : '⭐';
+      var html = '<div class="vocab-progress"><div class="fill" style="width:100%"></div></div>';
+      html += '<div class="vocab-stage vocab-complete">';
+      html += '<div class="vocab-emoji-card" style="background:linear-gradient(135deg,#FFF9E6,#FFE082)">🎉</div>';
+      html += '<div class="vc-title">全部学完啦！</div>';
+      html += '<div class="vc-stars">' + stars + '</div>';
+      html += '<div class="vc-score">答对 ' + this.state.vocabScore + ' / ' + maxScore + ' 题（' + scorePct + '%）</div>';
+      html += '<div class="vc-word-list">';
+      m.words.forEach(function(w) {
+        html += '<div class="vc-word-item"><span class="vcw-emoji">' + w.emoji + '</span><div class="vcw-info"><div class="vcw-word">' + w.word + '</div><div class="vcw-meaning">' + w.meaning + '</div></div><button class="vrw-play" onclick="App.speak(\'' + w.word.replace(/'/g, "\\'") + '\')">🔊</button></div>';
+      });
+      html += '</div>';
+      html += '<div style="font-size:13px;color:var(--text-sub);margin-top:8px">明天学习新单词时，会先复习这' + m.words.length + '个单词哦</div>';
+      html += '</div>';
+      // Save completed words for next-day review
+      this._saveLearnedWords(dayIdx, m.words);
+      return html;
+    }
+    const word = m.words[wIdx];
+    const stage = word.stages[sIdx];
+    const totalStages = m.words.length * word.stages.length;
+    const currentProgress = (wIdx * word.stages.length + sIdx) / totalStages * 100;
+
+    html = '<div class="vocab-progress"><div class="fill" style="width:' + currentProgress + '%"></div></div>';
+    html += '<div class="vocab-stars">' + '⭐'.repeat(Math.min(this.state.vocabScore, 10)) + '</div>';
+    html += '<div class="vocab-stage">';
+
+    if (stage.type === 'learn') {
+      html += '<div class="vocab-emoji-card">' + word.emoji + '</div>';
+      html += '<div class="vocab-word">' + word.word + '</div>';
+      html += '<div class="vocab-phonetic">' + word.phonetic + '</div>';
+      html += '<div class="vocab-meaning">' + word.meaning + '</div>';
+      html += '<div class="vocab-example">"' + word.example_en + '"<br>' + word.example_cn + '</div>';
+      html += '<button class="vocab-btn" onclick="App.speak(\'' + word.word.replace(/'/g,"\\'") + '\')">🔊 听发音</button>';
+      html += '<button class="vocab-btn" onclick="App.nextVocabStage(' + mi + ',' + dayIdx + ',' + m.words.length + ',' + word.stages.length + ')">我学会了 →</button>';
+      // Auto-read the word
+      this.autoSpeak(word.word);
+    } else if (stage.type === 'image_choice') {
+      html += '<div class="auto-read-badge"><span class="speaking-anim">🔊</span> 正在朗读...</div>';
+      html += '<div class="vocab-meaning">' + stage.prompt + '</div>';
+      html += '<div class="vocab-emoji-card" style="width:100px;height:100px;font-size:52px">' + word.emoji + '</div>';
+      html += '<div class="vocab-options" id="vo-' + mi + '" style="opacity:0.4;pointer-events:none">';
+      stage.options.forEach((opt, oi) => {
+        html += '<div class="vocab-option-card" onclick="App.checkVocabAnswer(' + mi + ',' + oi + ',' + stage.answer + ',' + dayIdx + ',' + m.words.length + ',' + word.stages.length + ')">' + opt + '</div>';
+      });
+      html += '</div>';
+      html += '<div class="listen-wait" id="vw-' + mi + '" style="text-align:center;padding:8px;color:var(--text-sub);font-size:12px">⏳ 请先听完整朗读，再选择答案</div>';
+      // Auto-read the word, then enable options
+      this.autoSpeak(word.word, function() {
+        var el = document.getElementById('vo-' + mi);
+        var w = document.getElementById('vw-' + mi);
+        if (el) { el.style.opacity = '1'; el.style.pointerEvents = 'auto'; }
+        if (w) w.style.display = 'none';
+      });
+    } else if (stage.type === 'meaning_choice') {
+      html += '<div class="auto-read-badge"><span class="speaking-anim">🔊</span> 正在朗读...</div>';
+      html += '<div class="vocab-emoji-card" style="width:100px;height:100px;font-size:52px">' + word.emoji + '</div>';
+      html += '<div class="vocab-word">' + word.word + '</div>';
+      html += '<div class="vocab-phonetic">' + word.phonetic + '</div>';
+      html += '<div class="vocab-meaning">' + stage.prompt + '</div>';
+      html += '<div class="vocab-options" id="vo-' + mi + '" style="opacity:0.4;pointer-events:none">';
+      stage.options.forEach((opt, oi) => {
+        html += '<div class="vocab-option-card" style="font-size:16px;padding:14px 8px" onclick="App.checkVocabAnswer(' + mi + ',' + oi + ',' + stage.answer + ',' + dayIdx + ',' + m.words.length + ',' + word.stages.length + ')">' + opt + '</div>';
+      });
+      html += '</div>';
+      html += '<div class="listen-wait" id="vw-' + mi + '" style="text-align:center;padding:8px;color:var(--text-sub);font-size:12px">⏳ 请先听完整朗读，再选择答案</div>';
+      // Auto-read the word, then enable options
+      this.autoSpeak(word.word, function() {
+        var el = document.getElementById('vo-' + mi);
+        var w = document.getElementById('vw-' + mi);
+        if (el) { el.style.opacity = '1'; el.style.pointerEvents = 'auto'; }
+        if (w) w.style.display = 'none';
+      });
+    } else if (stage.type === 'letter_read') {
+      var letters = word.letters || word.word.split('');
+      html += '<div class="vocab-step-label">🔤 字母跟读</div>';
+      html += '<div class="vocab-emoji-card" style="width:100px;height:100px;font-size:52px">' + word.emoji + '</div>';
+      html += '<div class="vocab-word">' + word.word + '</div>';
+      html += '<div class="vocab-phonetic">' + word.phonetic + '</div>';
+      html += '<div class="read-instruction">\u{1F446} \u70B9\u51FB\u5B57\u6BCD \u2192 \u9EA6\u514B\u98CE\u5F55\u97F3 \u2192 \u81EA\u52A8\u8BC4\u5206\uFF08\u5171\u4E24\u8F6E\uFF0C\u65E0\u673A\u5668\u53D1\u97F3\uFF09</div>';
+      html += '<div class="read-round-badge" id="letter-round-' + mi + '">第 1 轮</div>';
+      html += '<div class="letter-read-container" id="letter-container-' + mi + '">';
+      for (var li = 0; li < letters.length; li++) {
+        html += '<div class="letter-box student-read" id="letter-' + mi + '-' + li + '" onclick="App._readLetter(' + mi + ',' + li + ',' + letters.length + ')">' + letters[li].toUpperCase() + '</div>';
+      }
+      html += '</div>';
+      html += '<div id="letter-read-area-' + mi + '"></div>';
+      html += '<div id="letter-read-btn-' + mi + '" style="display:none;margin-top:12px">';
+      html += '<button class="vocab-btn" onclick="App.nextVocabStage(' + mi + ',' + dayIdx + ',' + m.words.length + ',' + word.stages.length + ')">我读好了 →</button>';
+      html += '</div>';
+      this._letterReadState = { round: 1, done: 0, total: letters.length };
+    } else if (stage.type === 'syllable_blend') {
+      var syllables = word.syllables || [word.word];
+      html += '<div class="vocab-step-label">🎵 音标拼合</div>';
+      html += '<div class="vocab-emoji-card" style="width:100px;height:100px;font-size:52px">' + word.emoji + '</div>';
+      html += '<div class="vocab-word">' + word.word + ' ' + word.phonetic + '</div>';
+      html += '<div class="read-instruction">\u{1F446} \u70B9\u51FB\u97F3\u8282 \u2192 \u9EA6\u514B\u98CE\u5F55\u97F3 \u2192 \u81EA\u52A8\u8BC4\u5206\uFF08\u5171\u4E24\u8F6E\uFF0C\u65E0\u673A\u5668\u53D1\u97F3\uFF09</div>';
+      html += '<div class="read-round-badge" id="syllable-round-' + mi + '">第 1 轮</div>';
+      html += '<div class="syllable-container" id="syllable-container-' + mi + '">';
+      for (var si = 0; si < syllables.length; si++) {
+        html += '<div class="syllable-box student-read" id="syllable-' + mi + '-' + si + '" onclick="App._readSyllable(' + mi + ',' + si + ',' + syllables.length + ')">' + syllables[si] + '</div>';
+        if (si < syllables.length - 1) html += '<span class="syllable-sep">·</span>';
+      }
+      html += '</div>';
+      html += '<div id="syllable-read-area-' + mi + '"></div>';
+      html += '<div id="syllable-read-btn-' + mi + '" style="display:none;margin-top:12px">';
+      html += '<button class="vocab-btn" onclick="App.nextVocabStage(' + mi + ',' + dayIdx + ',' + m.words.length + ',' + word.stages.length + ')">我拼好了 →</button>';
+      html += '</div>';
+      this._syllableReadState = { round: 1, done: 0, total: syllables.length };
+    } else if (stage.type === 'spell_fill') {
+      // Multi-blank support: format like "di__co__r" or "b__autiful"
+      var wordWithBlank = stage.prompt.split(': ').pop();
+      var parts = wordWithBlank.split('__');
+      var blankCount = parts.length - 1;
+      // If answer is a single string, split into chars for multi-blank
+      var answerChars = stage.answer.split('');
+      // Distribute answer chars across blanks
+      var blankLengths = [];
+      if (blankCount === 1) {
+        blankLengths = [answerChars.length];
+      } else {
+        // Distribute evenly or use explicit lengths if available
+        var base = Math.floor(answerChars.length / blankCount);
+        var rem = answerChars.length % blankCount;
+        for (var bi = 0; bi < blankCount; bi++) {
+          blankLengths.push(base + (bi < rem ? 1 : 0));
+        }
+      }
+
+      var hintText = answerChars.length === 1 ? '缺少一个字母' : '缺少 ' + answerChars.length + ' 个字母';
+
+      html += '<div class="vocab-emoji-card" style="width:100px;height:100px;font-size:52px">' + word.emoji + '</div>';
+      html += '<div class="vocab-word">' + word.meaning + '</div>';
+      html += '<div class="vocab-meaning">补全拼写</div>';
+      html += '<div class="fs-12 text-sub" style="color:var(--primary)">' + hintText + '</div>';
+      html += '<div class="spell-inline-container mt-16">';
+      var charIdx = 0;
+      for (var pi = 0; pi < parts.length; pi++) {
+        if (parts[pi]) {
+          html += '<span class="spell-letter">' + parts[pi] + '</span>';
+        }
+        if (pi < parts.length - 1) {
+          var bl = blankLengths[pi] || 1;
+          html += '<input type="text" class="spell-blank-input" id="vocab-spell-' + mi + '-' + pi + '" maxlength="' + bl + '" size="' + bl + '" placeholder="' + '\u2014'.repeat(bl) + '" autocomplete="off" autocorrect="off" autocapitalize="none" style="width:' + (bl * 28 + 16) + 'px">';
+        }
+      }
+      html += '</div>';
+      html += '<div id="spell-result-' + mi + '"></div>';
+      html += '<button class="vocab-btn" onclick="App.checkSpell(' + mi + ',\'' + stage.answer.replace(/'/g,"\\'") + '\',' + dayIdx + ',' + m.words.length + ',' + word.stages.length + ',\'' + word.word.replace(/'/g,"\\'") + '\')">确认</button>';
+      this._spellFocusId = 'vocab-spell-' + mi + '-0';
+    }
+    html += '</div>';
+    return html;
+  },
+
+  checkVocabAnswer(mi, selected, correct, dayIdx, wordCount, stageCount) {
+    const opts = document.querySelectorAll('#vocab-game-' + mi + ' .vocab-option-card');
+
+    if (selected === correct) {
+      // Correct answer
+      opts.forEach((el, i) => {
+        el.style.pointerEvents = 'none';
+        if (i === correct) el.classList.add('correct');
+      });
+      this.state.vocabScore++;
+      this._playCorrectSound();
+      var correctEl = opts[correct];
+      if (correctEl) this._showCelebration(correctEl);
+      var resultDiv = document.getElementById('spell-result-' + mi) || document.getElementById('vocab-retry-area-' + mi);
+      if (resultDiv) resultDiv.innerHTML = '<div style="color:var(--success);font-size:14px;font-weight:600;margin-top:8px">✅ 正确！</div>';
+      setTimeout(() => this.nextVocabStage(mi, dayIdx, wordCount, stageCount), 1200);
+    } else {
+      // Wrong answer - show in orange, highlight correct answer, make it clickable
+      opts.forEach((el, i) => {
+        el.style.pointerEvents = 'none';
+        if (i === selected) el.classList.add('wrong');
+        if (i === correct) {
+          el.classList.add('correct', 'clickable-correct');
+        }
+      });
+      this._playWrongSound();
+      var resultDiv = document.getElementById('spell-result-' + mi) || document.getElementById('vocab-retry-area-' + mi);
+      if (!resultDiv) {
+        resultDiv = document.createElement('div');
+        resultDiv.id = 'vocab-retry-area-' + mi;
+        var stageEl = document.getElementById('vocab-game-' + mi);
+        if (stageEl) stageEl.appendChild(resultDiv);
+      }
+      resultDiv.innerHTML = '<div style="color:var(--warning);font-size:13px;margin-top:8px">👉 点亮绿色正确答案，继续学习</div>';
+      // Make correct answer clickable to advance
+      var correctEl = opts[correct];
+      if (correctEl) {
+        correctEl.style.pointerEvents = 'auto';
+        correctEl.onclick = null;
+        correctEl.addEventListener('click', () => {
+          this.nextVocabStage(mi, dayIdx, wordCount, stageCount);
+        });
+      }
+    }
+  },
+
+  checkSpell(mi, answer, dayIdx, wordCount, stageCount, fullWord) {
+    // Collect all spell inputs for this module
+    var collected = '';
+    var inputEls = [];
+    var idx = 0;
+    while (true) {
+      var inp = document.getElementById('vocab-spell-' + mi + '-' + idx);
+      if (!inp) break;
+      collected += inp.value.trim().toLowerCase();
+      inputEls.push(inp);
+      idx++;
+    }
+    // Fallback to single input if no multi-input found
+    if (inputEls.length === 0) {
+      var singleInp = document.getElementById('vocab-spell-' + mi);
+      if (singleInp) {
+        collected = singleInp.value.trim().toLowerCase();
+        inputEls.push(singleInp);
+      }
+    }
+
+    const resultDiv = document.getElementById('spell-result-' + mi);
+    if (collected === answer.toLowerCase()) {
+      inputEls.forEach(function(el) {
+        el.classList.add('correct');
+        el.classList.remove('wrong');
+        el.disabled = true;
+      });
+      this.state.vocabScore++;
+      this._playCorrectSound();
+      if (resultDiv) {
+        resultDiv.innerHTML = '<div class="spell-result-word">' + fullWord + '</div><div class="spell-result-phonetic">🔊 ' + fullWord + '</div>';
+      }
+      this.speak(fullWord);
+      setTimeout(() => this.nextVocabStage(mi, dayIdx, wordCount, stageCount), 1500);
+    } else {
+      inputEls.forEach(function(el) {
+        el.classList.add('wrong');
+        el.classList.remove('correct');
+        el.value = '';
+      });
+      this._playWrongSound();
+      if (resultDiv) {
+        var hintText = answer.length === 1 ? '缺少一个字母，请再试一次' : '缺少 ' + answer.length + ' 个字母，请再试一次';
+        resultDiv.innerHTML = '<div style="color:var(--danger);font-size:13px;margin-top:8px">❌ ' + hintText + '</div>';
+      }
+      setTimeout(function() {
+        inputEls.forEach(function(el) {
+          el.classList.remove('wrong');
+        });
+        if (inputEls[0]) inputEls[0].focus();
+      }, 600);
+    }
+  },
+
+  nextVocabStage(mi, dayIdx, wordCount, stageCount) {
+    const m = HOMEWORK_DATA[dayIdx].modules[mi];
+    this.state.vocabStage++;
+    if (this.state.vocabStage >= stageCount) {
+      this.state.vocabStage = 0;
+      this.state.vocabWordIdx++;
+    }
+    const el = document.getElementById('vocab-game-' + mi);
+    if (el) el.innerHTML = this.renderVocabStage(m, mi, dayIdx);
+    // Auto-focus spell input if present
+    if (this._spellFocusId) {
+      var focusId = this._spellFocusId;
+      this._spellFocusId = null;
+      setTimeout(function() {
+        var inp = document.getElementById(focusId);
+        if (inp) inp.focus();
+      }, 200);
+    }
+  },
+
+  // ====== Student Voice Recording (MediaRecorder + Web Audio API) ======
+  // NO machine TTS — student records their own voice, system analyzes volume for auto-scoring
+
+  // Stop any ongoing recording (called before starting a new one)
+  _stopOngoingRecording() {
+    if (this._currentRecorder && this._currentRecorder.state === 'recording') {
+      try { this._currentRecorder.stop(); } catch(e) {}
+    }
+    if (this._currentStream) {
+      try { this._currentStream.getTracks().forEach(function(t) { t.stop(); }); } catch(e) {}
+      this._currentStream = null;
+    }
+    if (this._currentAudioCtx) {
+      try { this._currentAudioCtx.close(); } catch(e) {}
+      this._currentAudioCtx = null;
+    }
+    this._currentRecorder = null;
+  },
+
+  // Start recording a letter — NO machine audio, just microphone
+  _readLetter(mi, ci, total) {
+    var el = document.getElementById('letter-' + mi + '-' + ci);
+    if (!el || el.classList.contains('read-done') || el.classList.contains('reading')) return;
+    // Stop any previous recording
+    this._stopOngoingRecording();
+    // Reset other reading letters
+    var reading = document.querySelectorAll('#letter-container-' + mi + ' .letter-box.reading');
+    reading.forEach(function(l) { l.classList.remove('reading'); });
+    el.classList.add('reading');
+    var area = document.getElementById('letter-read-area-' + mi);
+    this._startRecording(el, area, 'letter', mi, ci, total);
+  },
+
+  // Start recording a syllable — NO machine audio (removed this.speak())
+  _readSyllable(mi, si, total) {
+    var el = document.getElementById('syllable-' + mi + '-' + si);
+    if (!el || el.classList.contains('read-done') || el.classList.contains('reading')) return;
+    this._stopOngoingRecording();
+    var reading = document.querySelectorAll('#syllable-container-' + mi + ' .syllable-box.reading');
+    reading.forEach(function(s) { s.classList.remove('reading'); });
+    el.classList.add('reading');
+    var area = document.getElementById('syllable-read-area-' + mi);
+    this._startRecording(el, area, 'syllable', mi, si, total);
+  },
+
+  // Shared recording function using MediaRecorder API
+  _startRecording(el, area, type, mi, idx, total) {
+    var self = this;
+    var label = el.textContent;
+    var prefix = type === 'letter' ? 'letter' : 'syllable';
+
+    // Show recording UI — microphone icon + countdown + wave
+    area.innerHTML = '<div class="letter-rec-area">' +
+      '<div class="letter-rec-mic">\u{1F3A4}</div>' +
+      '<div class="letter-rec-label">\u6B63\u5728\u5F55\u97F3 \u2014 \u8BF7\u5927\u58F0\u8BFB\u51FA ' + label + '</div>' +
+      '<div class="rec-timer" id="rt-' + prefix + '-' + mi + '-' + idx + '">3</div>' +
+      '<div class="rec-wave"><div class="rec-wave-bar" id="rw-' + prefix + '-' + mi + '-' + idx + '" style="width:0%"></div></div>' +
+      '</div>';
+
+    // Check browser support for MediaRecorder
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+      self._showMicError(el, area, type, mi, idx, total, '\u6D4F\u89C8\u5668\u4E0D\u652F\u6301\u5F55\u97F3\u529F\u80FD');
+      return;
+    }
+
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then(function(stream) {
+        self._doRecord(el, area, type, mi, idx, total, stream, label);
+      })
+      .catch(function(err) {
+        self._showMicError(el, area, type, mi, idx, total, '\u65E0\u6CD5\u8BBF\u95EE\u9EA6\u514B\u98CE\uFF0C\u8BF7\u5141\u8BB8\u6743\u9650');
+      });
+  },
+
+  // Show microphone error with retry button
+  _showMicError(el, area, type, mi, idx, total, msg) {
+    el.classList.remove('reading');
+    var retryFn = type === 'letter' ? '_retryLetter' : '_retrySyllable';
+    area.innerHTML = '<div style="text-align:center;margin-top:12px">' +
+      '<div style="color:var(--danger);font-size:14px;margin-bottom:8px">\u26A0\uFE0F ' + msg + '</div>' +
+      '<div style="font-size:12px;color:var(--text-sub);margin-bottom:8px">\u8BF7\u4F7F\u7528 Chrome \u6216 Safari \u6D4F\u89C8\u5668\uFF0C\u5E76\u70B9\u51FB\u5730\u5740\u5141\u8BB8\u9EA6\u514B\u98CE\u6743\u9650</div>' +
+      '<button class="letter-retry-btn" onclick="App.' + retryFn + '(' + mi + ',' + idx + ',' + total + ')">\u{1F3A4} \u91CD\u8BD5</button>' +
+      '</div>';
+  },
+
+  // Actual recording with MediaRecorder + Web Audio API volume analysis
+  _doRecord(el, area, type, mi, idx, total, stream, label) {
+    var self = this;
+    var prefix = type === 'letter' ? 'letter' : 'syllable';
+
+    // Create AudioContext for volume analysis
+    var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+    var source = audioCtx.createMediaStreamSource(stream);
+    var analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.3;
+    source.connect(analyser);
+
+    // Store for cleanup
+    self._currentRecorder = null;
+    self._currentStream = stream;
+    self._currentAudioCtx = audioCtx;
+
+    var recorder = new MediaRecorder(stream);
+    self._currentRecorder = recorder;
+    var chunks = [];
+    var maxVol = 0;
+    var volSum = 0;
+    var samples = 0;
+    var dataArr = new Uint8Array(analyser.frequencyBinCount);
+
+    var waveEl = document.getElementById('rw-' + prefix + '-' + mi + '-' + idx);
+    var timerEl = document.getElementById('rt-' + prefix + '-' + mi + '-' + idx);
+
+    // Monitor volume every 50ms during recording
+    var volTimer = setInterval(function() {
+      analyser.getByteFrequencyData(dataArr);
+      var sum = 0;
+      for (var i = 0; i < dataArr.length; i++) sum += dataArr[i];
+      var avg = sum / dataArr.length;
+      if (avg > maxVol) maxVol = avg;
+      volSum += avg;
+      samples++;
+      // Update wave bar visualization
+      if (waveEl) {
+        waveEl.style.width = Math.min(100, Math.round(avg * 3)) + '%';
+      }
+    }, 50);
+
+    recorder.ondataavailable = function(e) {
+      if (e.data.size > 0) chunks.push(e.data);
+    };
+
+    recorder.onstop = function() {
+      clearInterval(volTimer);
+      // Clean up stream and audio context
+      stream.getTracks().forEach(function(t) { t.stop(); });
+      try { audioCtx.close(); } catch(e) {}
+      self._currentRecorder = null;
+      self._currentStream = null;
+      self._currentAudioCtx = null;
+
+      // Determine if student actually spoke (volume threshold)
+      var spoke = maxVol > 12;
+
+      if (spoke) {
+        // Success — create audio playback + score
+        var blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+        var audioUrl = URL.createObjectURL(blob);
+        // Score: based on max volume, mapped to 60-100 range
+        var score = Math.min(100, Math.round(55 + maxVol * 1.5));
+
+        el.classList.remove('reading');
+        el.classList.add('read-done');
+        self._playCorrectSound();
+
+        // Store score
+        if (type === 'letter') {
+          if (!self._letterScores) self._letterScores = {};
+          var lkey = mi + '-' + idx + '-' + (self._letterReadState ? self._letterReadState.round : 1);
+          self._letterScores[lkey] = score;
+        } else {
+          if (!self._syllableScores) self._syllableScores = {};
+          var skey = mi + '-' + idx + '-' + (self._syllableReadState ? self._syllableReadState.round : 1);
+          self._syllableScores[skey] = score;
+        }
+
+        // Show success with audio playback
+        area.innerHTML = '<div style="text-align:center;margin-top:8px">' +
+          '<span class="letter-score-badge pass">\u2705 \u5F55\u97F3\u6210\u529F\uFF01' + label + '\uFF08' + score + '\u5206\uFF09</span>' +
+          '<audio controls src="' + audioUrl + '" style="width:100%;max-width:280px;margin-top:8px;height:32px"></audio>' +
+          '</div>';
+
+        if (type === 'letter') {
+          self._advanceLetterRead(mi, idx, total, area);
+        } else {
+          self._advanceSyllableRead(mi, idx, total, area);
+        }
+      } else {
+        // No voice detected — must retry
+        self._playWrongSound();
+        el.classList.remove('reading');
+        var retryFn = type === 'letter' ? '_retryLetter' : '_retrySyllable';
+        area.innerHTML = '<div style="text-align:center;margin-top:8px">' +
+          '<span class="letter-score-badge fail">\u274C \u6CA1\u6709\u68C0\u6D4B\u5230\u58F0\u97F3</span>' +
+          '<div style="font-size:13px;color:var(--text-sub);margin:8px 0">\u8BF7\u5927\u58F0\u8BFB\u51FA ' + label + '</div>' +
+          '<button class="letter-retry-btn" onclick="App.' + retryFn + '(' + mi + ',' + idx + ',' + total + ')">\u{1F3A4} \u91CD\u65B0\u8BFB</button>' +
+          '</div>';
+      }
+    };
+
+    // Start recording
+    recorder.start();
+
+    // 3-second countdown, then auto-stop
+    var timeLeft = 3;
+    var countdown = setInterval(function() {
+      timeLeft--;
+      if (timerEl) timerEl.textContent = timeLeft > 0 ? String(timeLeft) : '\u2713';
+      if (timeLeft <= 0) {
+        clearInterval(countdown);
+        if (recorder.state === 'recording') {
+          recorder.stop();
+        }
+      }
+    }, 1000);
+  },
+
+  // Retry letter reading
+  _retryLetter(mi, ci, total) {
+    var el = document.getElementById('letter-' + mi + '-' + ci);
+    if (el) el.classList.remove('read-done', 'reading');
+    this._readLetter(mi, ci, total);
+  },
+
+  // Retry syllable reading
+  _retrySyllable(mi, si, total) {
+    var el = document.getElementById('syllable-' + mi + '-' + si);
+    if (el) el.classList.remove('read-done', 'reading');
+    this._readSyllable(mi, si, total);
+  },
+
+  // Advance to next letter or next round
+  _advanceLetterRead(mi, ci, total, area) {
+    if (!this._letterReadState) this._letterReadState = { round: 1, done: 0, total: total };
+    this._letterReadState.done++;
+    var state = this._letterReadState;
+    var self = this;
+    if (state.done >= total) {
+      if (state.round === 1) {
+        state.round = 2;
+        state.done = 0;
+        setTimeout(function() {
+          var badge = document.getElementById('letter-round-' + mi);
+          if (badge) badge.textContent = '\u7B2C 2 \u8F6E';
+          var letters = document.querySelectorAll('#letter-container-' + mi + ' .letter-box');
+          letters.forEach(function(l) { l.classList.remove('read-done'); });
+          if (area) area.innerHTML = '<div style="color:var(--primary);font-size:13px;margin-top:8px">\u2705 \u7B2C1\u8F6E\u5B8C\u6210\uFF01\u5F00\u59CB\u7B2C2\u8F6E \u2014 \u70B9\u51FB\u5B57\u6BCD\u5F00\u59CB\u6717\u8BFB</div>';
+        }, 800);
+      } else {
+        setTimeout(function() {
+          self._showLetterComprehensive(mi, total);
+        }, 800);
+      }
+    }
+  },
+
+  // Show comprehensive letter reading score
+  _showLetterComprehensive(mi, total) {
+    var self = this;
+    var area = document.getElementById('letter-read-area-' + mi);
+    var btn = document.getElementById('letter-read-btn-' + mi);
+    if (!this._letterScores) this._letterScores = {};
+    var allScores = [];
+    var letterRows = '';
+    var letters = document.querySelectorAll('#letter-container-' + mi + ' .letter-box');
+    letters.forEach(function(el, idx) {
+      var letterChar = el.textContent;
+      var s1 = self._letterScores[mi + '-' + idx + '-1'] || 0;
+      var s2 = self._letterScores[mi + '-' + idx + '-2'] || 0;
+      var avg = Math.round((s1 + s2) / 2);
+      allScores.push(avg);
+      letterRows += '<div class="letter-detail-row">' +
+        '<span class="ldr-letter">' + letterChar + '</span>' +
+        '<span class="ldr-score" style="color:' + (avg >= 60 ? 'var(--success)' : 'var(--danger)') + '">' + avg + '\u5206</span>' +
+        '</div>';
+    });
+    var overall = allScores.length > 0 ? Math.round(allScores.reduce(function(a,b){return a+b;},0) / allScores.length) : 0;
+    var stars = '';
+    for (var i = 0; i < 5; i++) {
+      stars += i < Math.round(overall / 20) ? '\u2B50' : '\u2606';
+    }
+    if (area) {
+      area.innerHTML = '<div class="letter-comprehensive">' +
+        '<div class="lc-label">\u5B57\u6BCD\u8DDF\u8BFB\u7EFC\u5408\u8BC4\u5206</div>' +
+        '<div class="lc-score">' + overall + '</div>' +
+        '<div class="lc-stars">' + stars + '</div>' +
+        '<div style="margin:12px 0;text-align:left">' + letterRows + '</div>' +
+        '</div>';
+    }
+    if (btn) btn.style.display = 'block';
+    this._playCelebrate();
+  },
+
+  // Advance to next syllable or next round
+  _advanceSyllableRead(mi, si, total, area) {
+    if (!this._syllableReadState) this._syllableReadState = { round: 1, done: 0, total: total };
+    this._syllableReadState.done++;
+    var state = this._syllableReadState;
+    var self = this;
+    if (state.done >= total) {
+      if (state.round === 1) {
+        state.round = 2;
+        state.done = 0;
+        setTimeout(function() {
+          var badge = document.getElementById('syllable-round-' + mi);
+          if (badge) badge.textContent = '\u7B2C 2 \u8F6E';
+          var syls = document.querySelectorAll('#syllable-container-' + mi + ' .syllable-box');
+          syls.forEach(function(s) { s.classList.remove('read-done'); });
+          if (area) area.innerHTML = '<div style="color:var(--primary);font-size:13px;margin-top:8px">\u2705 \u7B2C1\u8F6E\u5B8C\u6210\uFF01\u5F00\u59CB\u7B2C2\u8F6E \u2014 \u70B9\u51FB\u97F3\u8282\u5F00\u59CB\u6717\u8BFB</div>';
+        }, 800);
+      } else {
+        setTimeout(function() {
+          self._showSyllableComprehensive(mi, total);
+        }, 800);
+      }
+    }
+  },
+
+  // Show comprehensive syllable reading score
+  _showSyllableComprehensive(mi, total) {
+    var self = this;
+    var area = document.getElementById('syllable-read-area-' + mi);
+    var btn = document.getElementById('syllable-read-btn-' + mi);
+    if (!this._syllableScores) this._syllableScores = {};
+    var allScores = [];
+    var sylRows = '';
+    var syls = document.querySelectorAll('#syllable-container-' + mi + ' .syllable-box');
+    syls.forEach(function(el, idx) {
+      var sylChar = el.textContent;
+      var s1 = self._syllableScores[mi + '-' + idx + '-1'] || 0;
+      var s2 = self._syllableScores[mi + '-' + idx + '-2'] || 0;
+      var avg = Math.round((s1 + s2) / 2);
+      allScores.push(avg);
+      sylRows += '<div class="letter-detail-row">' +
+        '<span class="ldr-letter">' + sylChar + '</span>' +
+        '<span class="ldr-score" style="color:' + (avg >= 60 ? 'var(--success)' : 'var(--danger)') + '">' + avg + '\u5206</span>' +
+        '</div>';
+    });
+    var overall = allScores.length > 0 ? Math.round(allScores.reduce(function(a,b){return a+b;},0) / allScores.length) : 0;
+    var stars = '';
+    for (var i = 0; i < 5; i++) {
+      stars += i < Math.round(overall / 20) ? '\u2B50' : '\u2606';
+    }
+    if (area) {
+      area.innerHTML = '<div class="letter-comprehensive">' +
+        '<div class="lc-label">\u97F3\u6807\u62FC\u5408\u7EFC\u5408\u8BC4\u5206</div>' +
+        '<div class="lc-score">' + overall + '</div>' +
+        '<div class="lc-stars">' + stars + '</div>' +
+        '<div style="margin:12px 0;text-align:left">' + sylRows + '</div>' +
+        '</div>';
+    }
+    if (btn) btn.style.display = 'block';
+    this._playCelebrate();
+  },
+
+  // Writing template
+  renderWritingTemplate(m, mi, dayIdx) {
+    let html = '<div class="writing-template">';
+    html += '<div class="writing-banner">⚠️ ' + m.requirement_cn + '</div>';
+    html += '<div class="writing-keywords">';
+    m.keywords.forEach(k => html += '<span class="keyword-chip">' + k + '</span>');
+    html += '</div>';
+    html += '<div class="card mb-16"><div class="card-title fs-12">📝 完成作文（填入空白处）</div>';
+    html += '<div class="writing-essay">';
+    let text = m.template;
+    m.blanks.forEach(b => {
+      text = text.replace('{{' + b.id + '}}', '<input type="text" class="writing-blank-input" data-blank="' + b.id + '" data-answer="' + b.answer + '" placeholder="' + b.hint_cn + '" style="border:none;border-bottom:2px solid var(--primary);text-align:center;color:var(--primary);font-weight:600;width:120px;background:transparent;font-size:14px">');
+    });
+    html += text;
+    html += '</div></div>';
+    html += '<button class="btn btn-primary" onclick="App.submitWriting(' + mi + ',' + dayIdx + ')">提交批改</button>';
+    html += '<div id="writing-result-' + mi + '"></div>';
+    html += '</div>';
+    return html;
+  },
+
+  submitWriting(mi, dayIdx) {
+    const m = HOMEWORK_DATA[dayIdx].modules[mi];
+    const inputs = document.querySelectorAll('[data-blank]');
+    let correct = 0, total = m.blanks.length;
+    let detail = '';
+    m.blanks.forEach(b => {
+      const input = document.querySelector('[data-blank="' + b.id + '"]');
+      const val = input.value.trim().toLowerCase();
+      const ans = b.answer.toLowerCase();
+      const isCorrect = val === ans;
+      if (isCorrect) correct++;
+      detail += '<div class="fs-12 mb-8"><span class="badge ' + (isCorrect?'badge-success':'badge-danger') + '">' + (isCorrect?'✅':'❌') + '</span> 空白' + b.id + '：你填 "' + (input.value||'(空)') + '" | 正确：' + b.answer + '</div>';
+      if (isCorrect) { input.style.color = 'var(--success)'; input.style.borderColor = 'var(--success)'; }
+      else { input.style.color = 'var(--danger)'; input.style.borderColor = 'var(--danger)'; }
+    });
+    const score = Math.round(correct / total * 100);
+    const result = document.getElementById('writing-result-' + mi);
+    result.innerHTML = '<div class="card mt-16" style="background:var(--primary-light)"><div class="card-title">📊 批改结果</div><div class="text-center mb-16"><span style="font-size:36px;font-weight:700;color:' + (score>=80?'var(--success)':score>=60?'var(--warning)':'var(--danger)') + '">' + score + '</span><span class="text-sub">分/100</span></div>' + detail + '<div class="q-explanation show mt-8"><div class="cn">📖 ' + (m.explanation_cn||'') + '</div><div class="en">📘 ' + (m.explanation_en||'') + '</div></div><div class="card mt-16" style="background:var(--success-light)"><div class="card-title fs-12">✅ 完整范文</div><div class="mt-8">' + m.full_text + '</div></div><div class="writing-banner mt-16">📝 请背诵这篇作文！明天将进行挖空默写测试</div></div>';
+  },
+
+  // Questions (reading, grammar, etc.)
+  renderQuestionsStudent(m, mi, dayIdx) {
+    let html = '';
+    // Audio enable check
+    if (!this.state.audioEnabled) {
+      html += '<div class="audio-enable-banner">';
+      html += '<div class="ae-icon">🔊</div>';
+      html += '<div class="ae-title">点击开启语音朗读</div>';
+      html += '<div class="ae-desc">开启后，每道题会自动用纯正美音朗读英语</div>';
+      html += '<button class="ae-btn" onclick="App.enableAudio()">🔊 开启语音</button>';
+      html += '</div>';
+      return html;
+    }
+    if (m.passage) {
+      html += '<div class="card mb-16" style="background:var(--bg)"><div class="fs-12 text-sub mb-4">📄 阅读材料：</div>' + (m.passage_cn||'') + '<br><br>' + m.passage + '</div>';
+    }
+    if (m.audio_text) {
+      html += '<div class="card mb-16" style="background:var(--info-light)"><button class="speak-btn play" onclick="App.speak(\'' + m.audio_text.replace(/'/g,"\\'") + '\')">🔊 听录音</button>';
+      html += '</div>';
+    }
+    m.questions.forEach((q, qi) => {
+      var qId = 'q-' + mi + '-' + qi;
+      html += '<div class="q-item" id="' + qId + '">';
+      html += '<div class="q-num">第' + (qi+1) + '题</div>';
+      // Add listen button if the question has audio content
+      // (audio_text like listening questions, OR English question text)
+      var qHasAudio = !!(q.audio_text || (q.question && /[a-zA-Z]/.test(q.question)));
+      if (qHasAudio) {
+        html += '<div class="auto-read-badge" id="arb-' + mi + '-' + qi + '"><span class="speaking-anim">🔊</span> 正在朗读...</div>';
+        html += '<div class="flex gap-8 mb-8"><button class="btn btn-outline btn-sm" onclick="App.replayQuestion(\'' + qId + '\',' + mi + ',' + qi + ',\'' + dayIdx + '\')">🔊 重新听</button></div>';
+      }
+      html += '<div class="q-text">' + q.question + '</div>';
+      if (q.options) {
+        // Options disabled until reading finishes
+        html += '<div class="q-options" id="qo-' + mi + '-' + qi + '" style="opacity:0.4;pointer-events:none">';
+        q.options.forEach((o, oi) => {
+          html += '<div class="q-option" onclick="App.selectAnswer(' + mi + ',' + qi + ',' + oi + ',' + dayIdx + ')">' + String.fromCharCode(65+oi) + '. ' + o + '</div>';
+        });
+        html += '</div>';
+        html += '<div class="listen-wait" id="qw-' + mi + '-' + qi + '" style="text-align:center;padding:8px;color:var(--text-sub);font-size:12px">⏳ 请先听完整朗读，再选择答案</div>';
+      } else {
+        html += '<input type="text" class="vocab-input" style="width:100%;letter-spacing:1px;border:1.5px solid #FFE0CC;margin-top:8px" id="fill-' + mi + '-' + qi + '" placeholder="填入答案" onkeyup="if(event.key===\'Enter\')App.submitFill(' + mi + ',' + qi + ',' + dayIdx + ')">';
+        html += '<button class="btn btn-primary btn-sm mt-8" onclick="App.submitFill(' + mi + ',' + qi + ',' + dayIdx + ')">确认</button>';
+      }
+      html += '<div class="q-answer" id="ans-' + mi + '-' + qi + '" style="display:none"></div>';
+      html += '<div class="q-explanation" id="exp-' + mi + '-' + qi + '"><div class="cn">📖 ' + (q.explanation_cn||'') + '</div><div class="en">📘 ' + (q.explanation_en||'') + '</div>';
+      // Correction area (only shows after wrong answer)
+      html += '<div class="card mt-8" style="background:var(--warning-light);display:none" id="correct-area-' + mi + '-' + qi + '"><div class="fs-12 mb-4">✏️ 请手写改正（输入你的改正答案）：</div><textarea rows="2" style="width:100%;border:1.5px solid #FFE0CC;border-radius:8px;padding:8px" placeholder="在此写出你的改正答案..."></textarea></div>';
+      html += '</div>';
+      html += '</div>';
+    });
+
+    // After rendering, auto-play audio_text first, then first question
+    // This avoids the forEach race condition where all speak() calls cancel each other
+    var self = this;
+    setTimeout(function() {
+      if (m.audio_text && self.state.audioEnabled) {
+        // Play audio_text first, then first question
+        self.speak(m.audio_text, { onDone: function() {
+          self._autoSpeakQuestion(m, mi, 0, dayIdx);
+        }});
+      } else if (m.questions && m.questions.length > 0) {
+        // No audio_text, just play first question
+        self._autoSpeakQuestion(m, mi, 0, dayIdx);
+      }
+    }, 300);
+
+    return html;
+  },
+
+  // Auto-speak a specific question and enable its options when done
+  _autoSpeakQuestion(m, mi, qi, dayIdx) {
+    var q = m.questions[qi];
+    var qHasAudio = !!(q && (q.audio_text || (q.question && /[a-zA-Z]/.test(q.question))));
+    if (!q || !qHasAudio) {
+      // No audio content, just enable options
+      var optsEl = document.getElementById('qo-' + mi + '-' + qi);
+      var waitEl = document.getElementById('qw-' + mi + '-' + qi);
+      if (optsEl) { optsEl.style.opacity = '1'; optsEl.style.pointerEvents = 'auto'; }
+      if (waitEl) waitEl.style.display = 'none';
+      return;
+    }
+    // Listening questions: play the audio_text (the actual listening content).
+    // Regular questions: play the English question text.
+    this.autoSpeak(q.audio_text || q.question, function() {
+      var optsEl = document.getElementById('qo-' + mi + '-' + qi);
+      var waitEl = document.getElementById('qw-' + mi + '-' + qi);
+      if (optsEl) { optsEl.style.opacity = '1'; optsEl.style.pointerEvents = 'auto'; }
+      if (waitEl) waitEl.style.display = 'none';
+    });
+  },
+
+  replayQuestion(qId, mi, qi, dayIdx) {
+    const m = HOMEWORK_DATA[dayIdx].modules[mi];
+    const q = m.questions[qi];
+    // Disable options while replaying
+    var optsEl = document.getElementById('qo-' + mi + '-' + qi);
+    var waitEl = document.getElementById('qw-' + mi + '-' + qi);
+    if (optsEl) { optsEl.style.opacity = '0.4'; optsEl.style.pointerEvents = 'none'; }
+    if (waitEl) { waitEl.style.display = 'block'; }
+    // Listening questions replay the audio_text; others replay the question text
+    this.speak(q.audio_text || q.question, { onDone: function() {
+      if (optsEl) { optsEl.style.opacity = '1'; optsEl.style.pointerEvents = 'auto'; }
+      if (waitEl) waitEl.style.display = 'none';
+    }});
+  },
+
+  selectAnswer(mi, qi, oi, dayIdx) {
+    const m = HOMEWORK_DATA[dayIdx].modules[mi];
+    const q = m.questions[qi];
+    const isCorrect = oi === q.answer;
+    const opts = document.querySelectorAll('#q-' + mi + '-' + qi + ' .q-option');
+    opts.forEach((el, i) => {
+      el.classList.remove('correct', 'wrong', 'selected');
+      el.style.pointerEvents = 'none';
+      if (i === q.answer) el.classList.add('correct');
+      if (i === oi && !isCorrect) el.classList.add('wrong');
+    });
+    const ansEl = document.getElementById('ans-' + mi + '-' + qi);
+    ansEl.style.display = 'block';
+    ansEl.innerHTML = isCorrect ? '✅ 正确！' : '❌ 错误。正确答案：' + String.fromCharCode(65+q.answer);
+    if (isCorrect) {
+      this._playCorrectSound();
+    } else {
+      this._playWrongSound();
+      document.getElementById('exp-' + mi + '-' + qi).classList.add('show');
+      document.getElementById('correct-area-' + mi + '-' + qi).style.display = 'block';
+    }
+    // Auto-speak the next question after a short delay
+    if (qi < m.questions.length - 1) {
+      var self = this;
+      setTimeout(function() {
+        self._autoSpeakQuestion(m, mi, qi + 1, dayIdx);
+      }, isCorrect ? 1500 : 2500);
+    }
+  },
+
+  submitFill(mi, qi, dayIdx) {
+    const m = HOMEWORK_DATA[dayIdx].modules[mi];
+    const q = m.questions[qi];
+    const input = document.getElementById('fill-' + mi + '-' + qi);
+    const val = input.value.trim().toLowerCase();
+    const ans = String(q.answer).toLowerCase();
+    const isCorrect = val === ans;
+    const ansEl = document.getElementById('ans-' + mi + '-' + qi);
+    ansEl.style.display = 'block';
+    if (isCorrect) {
+      ansEl.innerHTML = '✅ 正确！';
+      input.style.borderColor = 'var(--success)';
+      input.style.color = 'var(--success)';
+      document.getElementById('correct-area-' + mi + '-' + qi).style.display = 'none';
+      this._playCorrectSound();
+    } else {
+      ansEl.innerHTML = '❌ 错误。正确答案：' + q.answer;
+      input.style.borderColor = 'var(--danger)';
+      input.style.color = 'var(--danger)';
+      document.getElementById('exp-' + mi + '-' + qi).classList.add('show');
+      document.getElementById('correct-area-' + mi + '-' + qi).style.display = 'block';
+      this._playWrongSound();
+    }
+    // Auto-speak the next question after a short delay
+    if (qi < m.questions.length - 1) {
+      var self = this;
+      setTimeout(function() {
+        self._autoSpeakQuestion(m, mi, qi + 1, dayIdx);
+      }, isCorrect ? 1500 : 2500);
+    }
+  },
+
+  // ===== Student/Parent: My Errors =====
+  renderMyErrors() {
+    let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">❌ 我的错题本</h2>';
+    // Demo: show some errors from all days
+    const errors = [];
+    HOMEWORK_DATA.forEach((day, di) => {
+      day.modules.forEach(m => {
+        if (m.questions) {
+          m.questions.forEach((q, qi) => {
+            if (Math.random() > 0.6) {
+              errors.push({ day: day.day_cn, module: m.name_cn, q: q, dayIdx: di });
+            }
+          });
+        }
+      });
+    });
+    if (errors.length === 0) {
+      html += '<div class="card text-center text-sub">暂无错题，继续加油！</div>';
+    } else {
+      errors.forEach((e, i) => {
+        html += '<div class="error-item">';
+        html += '<div class="e-q"><strong>' + e.day + '·' + e.module + '</strong> ' + (e.q.question || e.q.sentence) + '</div>';
+        html += '<div class="q-answer">正确答案：' + (e.q.options ? String.fromCharCode(65+e.q.answer) : e.q.answer) + '</div>';
+        html += '<div class="q-explanation show"><div class="cn">📖 ' + (e.q.explanation_cn||'') + '</div><div class="en">📘 ' + (e.q.explanation_en||'') + '</div></div>';
+        html += '<button class="btn btn-outline btn-sm mt-8" onclick="App.practiceSimilar(' + i + ')">🔄 做相似题</button>';
+        html += '<div id="similar-' + i + '"></div>';
+        html += '</div>';
+      });
+    }
+    return html;
+  },
+
+  practiceSimilar(idx) {
+    const similar = {
+      question: 'Choose the correct answer: She ___ to school every day.',
+      options: ['go', 'goes', 'going', 'went'],
+      answer: 1,
+      explanation_cn: '第三人称单数 She + 一般现在时 → goes。注意 every day 是一般现在时标志词。',
+      explanation_en: 'Third person singular She + simple present tense → goes. Every day is a present tense marker.'
+    };
+    let html = '<div class="card mt-8" style="background:var(--warning-light)"><div class="card-title fs-12">🔄 相似练习题</div>';
+    html += '<div class="q-text">' + similar.question + '</div>';
+    html += '<div class="q-options">';
+    similar.options.forEach((o, oi) => {
+      html += '<div class="q-option" onclick="this.parentElement.querySelectorAll(\'.q-option\').forEach((el,i)=>{if(i===' + similar.answer + ')el.classList.add(\'correct\');if(i===' + oi + '&&i!==' + similar.answer + ')el.classList.add(\'wrong\')})">' + String.fromCharCode(65+oi) + '. ' + o + '</div>';
+    });
+    html += '</div>';
+    html += '<div class="q-explanation show"><div class="cn">📖 ' + similar.explanation_cn + '</div><div class="en">📘 ' + similar.explanation_en + '</div></div>';
+    html += '</div>';
+    document.getElementById('similar-' + idx).innerHTML = html;
+  },
+
+  // ===== Non-teacher: My Child Progress =====
+  renderMyProgress() {
+    const myName = this.state.userName;
+    const myClass = this.state.className;
+    let myStudent = this.state.students.find(s => s.name === myName && s.class === myClass);
+    if (!myStudent) {
+      // Auto-register if not found
+      myStudent = { id: 's' + Date.now(), name: myName, phone: this.state.phone, parentPhone: this.state.phone, class: myClass };
+    }
+    let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">📊 ' + myName + ' 的打卡情况</h2>';
+    html += '<div class="card mb-16" style="background:var(--primary-light);border:none">';
+    html += '<div class="flex-between"><span>👤 ' + myName + '</span><span class="badge badge-primary">' + myClass + '</span></div>';
+    html += '</div>';
+
+    // Summary stats
+    let doneCount = 0, totalCorrect = 0, correctCount = 0;
+    HOMEWORK_DATA.forEach((d, di) => {
+      const k = myStudent.id + '_d' + di;
+      const ck = this.state.checkins[k];
+      if (ck && ck.done) {
+        doneCount++;
+        if (ck.correctRate) { totalCorrect += ck.correctRate; correctCount++; }
+      }
+    });
+    html += '<div class="stat-row mb-16">';
+    html += '<div class="stat-box"><div class="num" style="color:var(--success)">' + doneCount + '</div><div class="label">已完成天数</div></div>';
+    html += '<div class="stat-box"><div class="num" style="color:var(--danger)">' + (HOMEWORK_DATA.length - doneCount) + '</div><div class="label">未完成天数</div></div>';
+    html += '<div class="stat-box"><div class="num">' + (correctCount > 0 ? Math.round(totalCorrect/correctCount) : 0) + '%</div><div class="label">平均正确率</div></div>';
+    html += '</div>';
+
+    // Daily detail table
+    html += '<div class="card"><table class="data-table"><thead><tr><th>日期</th><th>类型</th><th>打卡状态</th><th>完成时间</th><th>正确率</th><th>错题数</th></tr></thead><tbody>';
+    HOMEWORK_DATA.forEach((d, di) => {
+      const k = myStudent.id + '_d' + di;
+      const ck = this.state.checkins[k];
+      html += '<tr><td>' + d.day_cn + '（' + this.getDayDateLabel(di, 0) + '）' + (this.isDayToday(di, 0) ? ' 📍今天' : '') + '</td>';
+      html += '<td>' + (d.is_speaking_day ? 'AI口语日' : '练习日') + '</td>';
+      if (ck && ck.done) {
+        html += '<td><span class="badge badge-success">已打卡</span></td>';
+        html += '<td>' + (ck.time||'-') + '</td>';
+        html += '<td><span class="badge ' + (ck.correctRate>=85?'badge-success':ck.correctRate>=60?'badge-warning':'badge-danger') + '">' + (ck.correctRate||0) + '%</span></td>';
+        html += '<td>' + (ck.wrongCount||0) + '</td>';
+      } else {
+        html += '<td><span class="badge badge-danger">未打卡</span></td>';
+        html += '<td>-</td><td>-</td><td>-</td>';
+      }
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+    return html;
+  },
+
+  // ===== Non-teacher: Class Comparison =====
+  renderCompare() {
+    const myClass = this.state.className;
+    let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">🏆 全班完成率对比</h2>';
+    html += '<div class="card mb-16" style="background:var(--primary-light);border:none">';
+    html += '<div class="flex-between"><span>🏫 ' + myClass + '</span><span class="badge badge-primary">' + this.state.students.filter(s => s.class === myClass).length + '人</span></div>';
+    html += '</div>';
+
+    // Build rankings
+    const classStudents = this.state.students.filter(s => s.class === myClass);
+    const rankings = classStudents.map(s => {
+      let doneCount = 0, totalCorrect = 0, correctCount = 0, firstTime = '';
+      HOMEWORK_DATA.forEach((d, di) => {
+        const k = s.id + '_d' + di;
+        const ck = this.state.checkins[k];
+        if (ck && ck.done) {
+          doneCount++;
+          if (ck.correctRate) { totalCorrect += ck.correctRate; correctCount++; }
+          if (di === 0 && ck.time) firstTime = ck.time;
+        }
+      });
+      return { name: s.name, doneCount, avgCorrect: correctCount > 0 ? Math.round(totalCorrect/correctCount) : 0, firstTime, isMe: s.name === this.state.userName };
+    });
+    rankings.sort((a, b) => b.doneCount - a.doneCount || b.avgCorrect - a.avgCorrect);
+
+    // Ranking table
+    html += '<div class="card">';
+    html += '<table class="data-table"><thead><tr><th>排名</th><th>姓名</th><th>完成天数</th><th>平均正确率</th></tr></thead><tbody>';
+    rankings.forEach((r, i) => {
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : (i+1);
+      const highlight = r.isMe ? ' style="background:var(--primary-light)"' : '';
+      html += '<tr' + highlight + '><td>' + medal + '</td><td>' + r.name + (r.isMe ? ' <span class="badge badge-primary">我</span>' : '') + '</td>';
+      html += '<td>' + r.doneCount + '/' + HOMEWORK_DATA.length + '</td>';
+      html += '<td><span class="badge ' + (r.avgCorrect>=85?'badge-success':r.avgCorrect>=70?'badge-primary':'badge-warning') + '">' + r.avgCorrect + '%</span></td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+
+    // Daily check-in status for all
+    html += '<h3 class="mt-16" style="color:var(--primary-dark)">📅 每日打卡状态</h3>';
+    html += '<div class="card"><div class="checkin-table"><table class="data-table"><thead><tr><th>姓名</th>';
+    HOMEWORK_DATA.forEach((d, di) => html += '<th>' + d.day_cn + '<br><span style="font-weight:400;font-size:10px;color:var(--text-sub,#888)">' + this.getDayDateLabel(di, 0) + '</span></th>');
+    html += '<th>完成率</th></tr></thead><tbody>';
+    rankings.forEach(r => {
+      const student = classStudents.find(s => s.name === r.name);
+      const highlight = r.isMe ? ' style="background:var(--primary-light)"' : '';
+      html += '<tr' + highlight + '><td>' + r.name + (r.isMe ? ' ⭐' : '') + '</td>';
+      let doneCount = 0;
+      HOMEWORK_DATA.forEach((d, di) => {
+        const k = student.id + '_d' + di;
+        const ck = this.state.checkins[k];
+        if (ck && ck.done) {
+          doneCount++;
+          html += '<td><span class="checkin-dot ' + (ck.completed==='partial'?'partial':'done') + '" title="' + ck.time + '">✓</span></td>';
+        } else {
+          html += '<td><span class="checkin-dot undone">✗</span></td>';
+        }
+      });
+      html += '<td>' + Math.round(doneCount/HOMEWORK_DATA.length*100) + '%</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table></div></div>';
+    return html;
+  },
+
+  // ===== Invite =====
+  showInvite() {
+    const link = window.location.href + '?invite=1';
+    this.showModal(`
+      <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
+      <div class="modal-body invite-content">
+        <div class="qr-placeholder">🐰</div>
+        <p class="text-sub fs-12">扫码或分享链接加入</p>
+        <div class="invite-link">${link}</div>
+        <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>
+        <ul class="invite-rules">
+          <li>1. 点击链接进入平台</li>
+          <li>2. 输入手机号注册登录</li>
+          <li>3. 按格式填写备注名：中文名-英文名（如：马慧-Amy）</li>
+          <li>4. 等待老师审核并分配班级</li>
+        </ul>
+      </div>
+    `);
+  },
+
+  // ===== Modal =====
+  showModal(html) {
+    document.getElementById('modal-box').innerHTML = html;
+    document.getElementById('modal-overlay').classList.add('show');
+  },
+
+  closeModal() {
+    document.getElementById('modal-overlay').classList.remove('show');
+  },
+};
+
+// Init
+App.init();
+
+// Preload voices (some browsers need this)
+if (window.speechSynthesis) {
+  // Trigger voice loading
+  window.speechSynthesis.getVoices();
+  window.speechSynthesis.onvoiceschanged = function() {
+    if (App && App.state) {
+      App.state.voices = window.speechSynthesis.getVoices();
+    }
+  };
+  // Retry loading voices
+  setTimeout(function() { window.speechSynthesis.getVoices(); }, 500);
+  setTimeout(function() { window.speechSynthesis.getVoices(); }, 1500);
+}

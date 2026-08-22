@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bodyGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFE5CC"/>
+      <stop offset="0.6" stop-color="#FFCFA8"/>
+      <stop offset="1" stop-color="#FFB380"/>
+    </linearGradient>
+    <linearGradient id="earGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFD9B3"/>
+      <stop offset="1" stop-color="#FFAA66"/>
+    </linearGradient>
+    <radialGradient id="blushGrad" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FF9FB5" stop-opacity="0.6"/>
+      <stop offset="1" stop-color="#FF9FB5" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background rounded rect -->
+  <rect x="16" y="16" width="480" height="480" rx="120" ry="120" fill="#FFF5EB" stroke="#FFD9B3" stroke-width="4"/>
+
+  <!-- Left ear - flopped to the side -->
+  <g style="transform-origin:180px 100px">
+    <ellipse cx="180" cy="130" rx="42" ry="88" fill="url(#earGrad)" transform="rotate(-28 180 130)"/>
+    <ellipse cx="185" cy="135" rx="22" ry="62" fill="#FFB6C1" transform="rotate(-28 185 135)" opacity="0.85"/>
+  </g>
+
+  <!-- Right ear - standing up with slight tilt -->
+  <g style="transform-origin:332px 90px">
+    <ellipse cx="332" cy="110" rx="42" ry="92" fill="url(#earGrad)" transform="rotate(10 332 110)"/>
+    <ellipse cx="332" cy="115" rx="22" ry="65" fill="#FFB6C1" transform="rotate(10 332 115)" opacity="0.85"/>
+  </g>
+
+  <!-- Flower accessory on left ear -->
+  <g transform="translate(135 70)">
+    <circle r="16" fill="#FF6B9D"/>
+    <circle r="11" fill="#FFB6D9"/>
+    <circle r="6" fill="#FFD700"/>
+    <circle cx="0" cy="-20" r="7" fill="#FF6B9D" opacity="0.7"/>
+    <circle cx="18" cy="-10" r="6" fill="#FF6B9D" opacity="0.7"/>
+    <circle cx="-18" cy="-10" r="6" fill="#FF6B9D" opacity="0.7"/>
+  </g>
+
+  <!-- Head -->
+  <ellipse cx="256" cy="285" rx="168" ry="148" fill="url(#bodyGrad)"/>
+
+  <!-- Cheeks blush -->
+  <ellipse cx="120" cy="310" rx="32" ry="22" fill="url(#blushGrad)"/>
+  <ellipse cx="392" cy="310" rx="32" ry="22" fill="url(#blushGrad)"/>
+
+  <!-- Left eye - big sparkly -->
+  <ellipse cx="190" cy="252" rx="28" ry="34" fill="#3D2E1F"/>
+  <circle cx="200" cy="240" r="13" fill="#FFFFFF"/>
+  <circle cx="180" cy="265" r="8" fill="#FFFFFF" opacity="0.5"/>
+  <circle cx="202" cy="246" r="5" fill="#FFFFFF" opacity="0.9"/>
+
+  <!-- Right eye - big sparkly -->
+  <ellipse cx="322" cy="252" rx="28" ry="34" fill="#3D2E1F"/>
+  <circle cx="332" cy="240" r="13" fill="#FFFFFF"/>
+  <circle cx="312" cy="265" r="8" fill="#FFFFFF" opacity="0.5"/>
+  <circle cx="334" cy="246" r="5" fill="#FFFFFF" opacity="0.9"/>
+
+  <!-- Heart-shaped nose -->
+  <path d="M256 295 C244 283 228 290 228 305 C228 320 256 338 256 338 C256 338 284 320 284 305 C284 290 268 283 256 295 Z" fill="#FF6B9D"/>
+  <ellipse cx="248" cy="298" rx="6" ry="4" fill="#FFB6D9" opacity="0.7"/>
+
+  <!-- Mouth -->
+  <path d="M256 338 L256 352" stroke="#3D2E1F" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+  <path d="M256 352 Q228 372 206 355" stroke="#3D2E1F" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+  <path d="M256 352 Q284 372 306 355" stroke="#3D2E1F" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+
+  <!-- Cute tongue -->
+  <ellipse cx="256" cy="362" rx="10" ry="7" fill="#FF6B9D" opacity="0.8"/>
+
+  <!-- Whiskers -->
+  <line x1="120" y1="320" x2="70" y2="310" stroke="#E67329" stroke-width="2.5" stroke-linecap="round" opacity="0.4"/>
+  <line x1="120" y1="335" x2="68" y2="340" stroke="#E67329" stroke-width="2.5" stroke-linecap="round" opacity="0.4"/>
+  <line x1="392" y1="320" x2="442" y2="310" stroke="#E67329" stroke-width="2.5" stroke-linecap="round" opacity="0.4"/>
+  <line x1="392" y1="335" x2="444" y2="340" stroke="#E67329" stroke-width="2.5" stroke-linecap="round" opacity="0.4"/>
+
+  <!-- Sparkles -->
+  <text x="85" y="85" font-size="30" fill="#FFD700" opacity="0.85">&#10024;</text>
+  <text x="400" y="90" font-size="26" fill="#FFD700" opacity="0.85">&#10024;</text>
+  <text x="415" y="420" font-size="22" fill="#FF6B9D" opacity="0.6">&#10024;</text>
+
+  <!-- Small book at bottom -->
+  <rect x="206" y="400" width="100" height="55" rx="8" fill="#FFF" stroke="#FF8C42" stroke-width="3"/>
+  <line x1="256" y1="400" x2="256" y2="455" stroke="#FF8C42" stroke-width="2"/>
+  <line x1="220" y1="418" x2="245" y2="418" stroke="#FF8C42" stroke-width="2" stroke-linecap="round"/>
+  <line x1="220" y1="432" x2="245" y2="432" stroke="#FF8C42" stroke-width="2" stroke-linecap="round"/>
+  <line x1="267" y1="418" x2="292" y2="418" stroke="#FF8C42" stroke-width="2" stroke-linecap="round"/>
+  <line x1="267" y1="432" x2="292" y2="432" stroke="#FF8C42" stroke-width="2" stroke-linecap="round"/>
+</svg>
