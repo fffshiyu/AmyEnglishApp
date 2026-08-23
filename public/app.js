@@ -48,6 +48,7 @@ const App = {
       const notice = document.getElementById('wechat-notice');
       if (notice) notice.style.display = 'flex';
     }
+    if (/[?&]ttstest=1/.test(location.search)) { this.runTtsTest(); return; }
     // Auto-login if saved credentials exist
     this.tryAutoLogin();
   },
@@ -416,7 +417,7 @@ const App = {
     // photo for a child.
     const headerPhoto = document.getElementById('header-photo');
     if (headerPhoto) {
-      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=48';
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=49';
       headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
@@ -3448,6 +3449,65 @@ const App = {
     };
   },
 
+  // ===== TTS self-test =====
+  // Open ?ttstest=1 on the phone. Two guesses have already been shipped
+  // blind; this reports which step actually fails on the device that is
+  // failing — fetch, decode, or play — for each endpoint and text length.
+  async runTtsTest() {
+    const WORD = 'beautiful';
+    const SENT = 'Tom is a 10-year-old boy from England.';
+    const enc = encodeURIComponent;
+    const srcs = [
+      ['同源 /api/tts', t => '/api/tts?text=' + enc(t)],
+      ['有道 dictvoice', t => 'https://dict.youdao.com/dictvoice?audio=' + enc(t) + '&type=2'],
+      ['百度 gettts',    t => 'https://fanyi.baidu.com/gettts?lan=en&text=' + enc(t) + '&spd=3&source=web'],
+    ];
+
+    const box = document.createElement('div');
+    box.style.cssText = 'position:fixed;inset:0;background:#fff;z-index:99999;overflow:auto;padding:16px;font:14px/1.7 -apple-system,sans-serif';
+    box.innerHTML = '<h3 style="margin-bottom:8px">语音自检</h3>'
+      + '<div id="tt-out">点下面的按钮开始（必须点一下，浏览器才允许播放）</div>'
+      + '<button id="tt-go" style="margin-top:14px;padding:12px 22px;border-radius:999px;background:#F07000;color:#fff;font-size:16px">开始测试</button>'
+      + '<button id="tt-close" style="margin-left:8px;padding:12px 18px;border-radius:999px;background:#eee">关闭</button>';
+    document.body.appendChild(box);
+    box.querySelector('#tt-close').onclick = () => box.remove();
+
+    box.querySelector('#tt-go').onclick = async () => {
+      const out = box.querySelector('#tt-out');
+      const lines = [];
+      const say = m => { lines.push(m); out.innerHTML = lines.join('<br>'); };
+      say('UA: ' + navigator.userAgent.slice(0, 70));
+      say('speechSynthesis: ' + (window.speechSynthesis ? '有' : '无'));
+
+      for (const [name, mk] of srcs) {
+        for (const [label, text] of [['单词', WORD], ['句子', SENT]]) {
+          const url = mk(text);
+          // 1) can the file be fetched at all?
+          let fetched = '—';
+          try {
+            const r = await fetch(url, { method: 'GET' });
+            fetched = r.status + ' ' + (r.headers.get('content-type') || '');
+          } catch (e) { fetched = '取不到 (' + (e.message || e) + ')'; }
+
+          // 2) will the audio element actually play it?
+          const played = await new Promise(resolve => {
+            const a = new Audio();
+            let done = false;
+            const finish = v => { if (!done) { done = true; try { a.pause(); } catch (e) {} resolve(v); } };
+            a.onplaying = () => finish('播放成功');
+            a.onerror = () => finish('播放失败 code=' + (a.error && a.error.code));
+            setTimeout(() => finish('超时未播放'), 6000);
+            a.src = url;
+            const p = a.play();
+            if (p && p.catch) p.catch(e => finish('被拒绝: ' + (e.name || e)));
+          });
+          say('<b>' + name + ' · ' + label + '</b>：取 ' + fetched + ' ｜ ' + played);
+        }
+      }
+      say('<br>把这一屏截图发给我。');
+    };
+  },
+
   // ===== Sound-alike matching =====
   // A syllable read correctly still comes back spelled differently: Whisper
   // wrote "No." for /noʊ/ (know), "Full." for ful, "T" for ti, "shine." for
@@ -4423,7 +4483,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder"><img src="photo.jpeg?v=48" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=49" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>
