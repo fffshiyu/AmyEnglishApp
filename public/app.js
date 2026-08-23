@@ -403,7 +403,7 @@ const App = {
     // photo for a child.
     const headerPhoto = document.getElementById('header-photo');
     if (headerPhoto) {
-      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=27';
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=28';
       headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
@@ -3029,7 +3029,9 @@ const App = {
            + ' oncontextmenu="return false">'
            + (kind === 'letter' ? String(u).toUpperCase() : u) + '</div>';
     });
-    // The whole word is just another box in the same row — same shape, wider.
+    // The whole word is just another box — same shape, on its own line but
+    // still sized to the word, not stretched across the row.
+    html += '<div class="spell-break"></div>';
     html += '<div class="spell-box spell-word hold-target" id="spell-word-' + mi + '"'
          + ' onpointerdown="App._readFullWord(event,' + mi + ')"'
          + ' onpointerup="App._holdEnd(event)" onpointercancel="App._holdEnd(event)"'
@@ -3751,7 +3753,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder"><img src="photo.jpeg?v=27" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=28" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>
