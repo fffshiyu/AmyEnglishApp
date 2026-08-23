@@ -417,7 +417,7 @@ const App = {
     // photo for a child.
     const headerPhoto = document.getElementById('header-photo');
     if (headerPhoto) {
-      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=50';
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=51';
       headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
@@ -3167,8 +3167,8 @@ const App = {
       if (slot) slot.innerHTML = html;
       if (status) status.innerHTML = '';
 
-      const next = document.getElementById('stage-next-btn');
-      if (next) next.classList.add('nudge');
+      const passed = self._gateStep(heard ? r.score : 0, !!heard);
+      if (slot && !passed) slot.insertAdjacentHTML('beforeend', self._retryHint(false, !!heard));
 
       Api.submitSpeakingScore({
         studentId: self._myStudentId(), dayIdx: self.state.currentDay,
@@ -3176,6 +3176,35 @@ const App = {
         label: pair.en, score: r.score, spoken: heard, source: 'asr',
       });
     });
+  },
+
+  // A step is cleared only when the child actually got it. Below the mark
+  // they are asked to try again instead of being able to click past it.
+  PASS_SCORE: 60,
+
+  _gateStep(score, hasSpeech) {
+    const next = document.getElementById('stage-next-btn');
+    const passed = !!hasSpeech && score >= this.PASS_SCORE;
+    if (next) {
+      next.disabled = !passed;
+      next.classList.toggle('nudge', passed);
+    }
+    return passed;
+  },
+
+  _retryHint(passed, hasSpeech) {
+    if (passed) return '';
+    return '<div class="retry-hint">'
+         + (hasSpeech ? '没到 ' + this.PASS_SCORE + ' 分，请重试' : '没听清，请重试')
+         + '</div>';
+  },
+
+  // Steps that must be passed start with the forward button disabled.
+  _applyStepLock() {
+    if (!this._lockNextOnRender) return;
+    this._lockNextOnRender = false;
+    const next = document.getElementById('stage-next-btn');
+    if (next) { next.disabled = true; next.classList.remove('nudge'); }
   },
 
   // ===== Reading: one sentence at a time =====
@@ -3246,10 +3275,11 @@ const App = {
       const audio = document.getElementById('sent-audio-' + mi + '-' + si);
       if (audio) { const p = audio.play(); if (p && p.catch) p.catch(function(){}); }
 
-      // This sentence is done — draw the eye to the button that moves on,
-      // otherwise children sit and wait for something to happen.
-      const nextBtn = document.getElementById('stage-next-btn');
-      if (nextBtn) nextBtn.classList.add('nudge');
+      // Passing lights up the forward button; falling short leaves it locked
+      // and asks for another go.
+      const passed = self._gateStep(text ? a.score : 0, !!text);
+      const slotEl = document.getElementById('sent-result-' + mi + '-' + si);
+      if (slotEl && !passed) slotEl.insertAdjacentHTML('beforeend', self._retryHint(false, !!text));
 
       Api.submitSpeakingScore({
         studentId: self._myStudentId(), dayIdx: self.state.currentDay,
@@ -3376,8 +3406,8 @@ const App = {
   //
   // Coverage is the common everyday set, which is what graded readers use.
   // A character that is not in the table simply stays as it is.
-  TRAD: '這來個們時們國學會後間對開實發當經動樣進點種說實過還將產業務員來機關與體現們爾種學裡對後隻歡歡喜聽讀書愛媽爸媽學運動風雲電話語問題長長門馬鳥魚鳥飛車東頭興爾龍龜歲兒兒歲數樓錢銀鐵鋼銅顏線紙筆畫圖書園場農漁牧獵豬雞鴨鵝馬羊狗貓蟲蝦蟹龍鳳凰麗華貴賤買賣價貨財貧富續斷續轉輪車軍陣戰爭勝負將帥兵刀劍槍砲彈藥醫藥療養護衛檢驗診斷術學習慣練習題號碼碼頭條約結約續紹紅綠藍紫綢緞織繡縫繩結網絡線續維綜統緊繼績纖鮮鹽醬醋糖麵飯餅餃麥穀糧倉庫儲藏積蓄豐盈虧損盡歸還償贈賞罰責備懲獎勵勸諫諮詢議論談話語言詞語謠謎謝誠謹謙讓認識記憶讀誦講課試驗證據調查訪問訊詢誤誤譯譯詩詞誌誌湯姆麼沒總聲藝豐辦壓陽陰際隨險難靜華萬與專屬層屆屬島嶺峽帶幫幾廣廳應廠處備複雜賦稟賽獎勵誇讚讓態勢豐績優劣佳績勤懇認眞聰穎穎悟嚴謹積極熱愛興趣趣味關註註意專註堅持毅力鼓勵讚揚驕傲滿意輕鬆愉快興奮激動溫暖親切熱情開朗樂觀積極',
-  SIMP: '这来个们时们国学会后间对开实发当经动样进点种说实过还将产业务员来机关与体现们尔种学里对后只欢欢喜听读书爱妈爸妈学运动风云电话语问题长长门马鸟鱼鸟飞车东头兴尔龙龟岁儿儿岁数楼钱银铁钢铜颜线纸笔画图书园场农渔牧猎猪鸡鸭鹅马羊狗猫虫虾蟹龙凤凰丽华贵贱买卖价货财贫富续断续转轮车军阵战争胜负将帅兵刀剑枪炮弹药医药疗养护卫检验诊断术学习惯练习题号码码头条约结约续绍红绿蓝紫绸缎织绣缝绳结网络线续维综统紧继绩纤鲜盐酱醋糖面饭饼饺麦谷粮仓库储藏积蓄丰盈亏损尽归还偿赠赏罚责备惩奖励劝谏咨询议论谈话语言词语谣谜谢诚谨谦让认识记忆读诵讲课试验证据调查访问讯询误误译译诗词志志汤姆么没总声艺丰办压阳阴际随险难静华万与专属层届属岛岭峡带帮几广厅应厂处备复杂赋禀赛奖励夸赞让态势丰绩优劣佳绩勤恳认真聪颖颖悟严谨积极热爱兴趣趣味关注注意专注坚持毅力鼓励赞扬骄傲满意轻松愉快兴奋激动温暖亲切热情开朗乐观积极',
+  TRAD: '這來個們時們國學會後間對開實發當經動樣進點種說實過還將產業務員來機關與體現們爾種學裡對後隻歡歡喜聽讀書愛媽爸媽學運動風雲電話語問題長長門馬鳥魚鳥飛車東頭興爾龍龜歲兒兒歲數樓錢銀鐵鋼銅顏線紙筆畫圖書園場農漁牧獵豬雞鴨鵝馬羊狗貓蟲蝦蟹龍鳳凰麗華貴賤買賣價貨財貧富續斷續轉輪車軍陣戰爭勝負將帥兵刀劍槍砲彈藥醫藥療養護衛檢驗診斷術學習慣練習題號碼碼頭條約結約續紹紅綠藍紫綢緞織繡縫繩結網絡線續維綜統緊繼績纖鮮鹽醬醋糖麵飯餅餃麥穀糧倉庫儲藏積蓄豐盈虧損盡歸還償贈賞罰責備懲獎勵勸諫諮詢議論談話語言詞語謠謎謝誠謹謙讓認識記憶讀誦講課試驗證據調查訪問訊詢誤誤譯譯詩詞誌誌湯姆麼沒總聲藝豐辦壓陽陰際隨險難靜華萬與專屬層屆屬島嶺峽帶幫幾廣廳應廠處備複雜賦稟賽獎勵誇讚讓態勢豐績優劣佳績勤懇認眞聰穎穎悟嚴謹積極熱愛興趣趣味關註註意專註堅持毅力鼓勵讚揚驕傲滿意輕鬆愉快興奮激動溫暖親切熱情開朗樂觀積極師傅級課題練習講話語詞說讀寫聽談論述評論斷續識記憶課堂學校教師學生同學朋友夥伴親戚鄰居醫生護士司機農民工人職業',
+  SIMP: '这来个们时们国学会后间对开实发当经动样进点种说实过还将产业务员来机关与体现们尔种学里对后只欢欢喜听读书爱妈爸妈学运动风云电话语问题长长门马鸟鱼鸟飞车东头兴尔龙龟岁儿儿岁数楼钱银铁钢铜颜线纸笔画图书园场农渔牧猎猪鸡鸭鹅马羊狗猫虫虾蟹龙凤凰丽华贵贱买卖价货财贫富续断续转轮车军阵战争胜负将帅兵刀剑枪炮弹药医药疗养护卫检验诊断术学习惯练习题号码码头条约结约续绍红绿蓝紫绸缎织绣缝绳结网络线续维综统紧继绩纤鲜盐酱醋糖面饭饼饺麦谷粮仓库储藏积蓄丰盈亏损尽归还偿赠赏罚责备惩奖励劝谏咨询议论谈话语言词语谣谜谢诚谨谦让认识记忆读诵讲课试验证据调查访问讯询误误译译诗词志志汤姆么没总声艺丰办压阳阴际随险难静华万与专属层届属岛岭峡带帮几广厅应厂处备复杂赋禀赛奖励夸赞让态势丰绩优劣佳绩勤恳认真聪颖颖悟严谨积极热爱兴趣趣味关注注意专注坚持毅力鼓励赞扬骄傲满意轻松愉快兴奋激动温暖亲切热情开朗乐观积极师傅级课题练习讲话语词说读写听谈论述评论断续识记忆课堂学校教师学生同学朋友伙伴亲戚邻居医生护士司机农民工人职业',
 
   _toSimplified(text) {
     if (!this._tsMap) {
@@ -3996,6 +4026,7 @@ const App = {
   // that triggered it. If audio has not been unlocked yet, park it for the
   // first tap instead of losing it.
   _flushSpeakOnRender() {
+    this._applyStepLock();
     var sent = this._speakOnRender;
     this._speakOnRender = null;
     if (!sent) return;
@@ -4070,10 +4101,12 @@ const App = {
 
     if (step.kind === 'sentence') {
       html += this.renderSentenceStep(m, step.mi, step.si, dayIdx);
+      this._lockNextOnRender = true;
     } else if (step.kind === 'passage') {
       html += this.renderPassageStep(m, step.mi, dayIdx);
     } else if (step.kind === 'translate') {
       html += this.renderTranslateStep(m, step.mi, step.si, dayIdx);
+      this._lockNextOnRender = true;
     } else if (step.kind === 'question') {
       // English only — the child has already read this passage aloud.
       if (m.passage) {
@@ -4494,7 +4527,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder"><img src="photo.jpeg?v=50" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=51" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>

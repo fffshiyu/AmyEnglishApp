@@ -27,6 +27,11 @@ export default {
       return cors(json({ ok: true }), env);
     }
 
+    if (url.pathname === '/api/grade-translation') {
+      if (request.method !== 'POST') return cors(json({ error: 'method_not_allowed' }, 405), env);
+      return cors(await gradeTranslation(request, env), env);
+    }
+
     if (url.pathname === '/api/tts') {
       return cors(await tts(request, env, ctx), env);
     }
@@ -39,6 +44,88 @@ export default {
     return cors(json({ error: 'not_found' }, 404), env);
   },
 };
+
+// Grade a spoken Chinese translation.
+//
+// Character overlap alone cannot say WHY an answer is weak — it cannot tell a
+// missing clause from a wrong one, and it marks 「很有天赋」 down against
+// 「非常有天赋」 for no real reason. A language model can, and it writes its
+// answer in Simplified Chinese, which also ends the losing game of hand-
+// maintaining a Traditional-to-Simplified table.
+const GRADE_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
+
+async function gradeTranslation(request, env) {
+  const url = new URL(request.url);
+  let body;
+  try { body = await request.json(); } catch (e) { return json({ error: 'bad_json' }, 400); }
+  const en = String(body.en || '').slice(0, 600);
+  const ref = String(body.reference || '').slice(0, 600);
+  const said = String(body.spoken || '').slice(0, 600);
+  if (!en || !said) return json({ error: 'missing_fields' }, 400);
+
+  const prompt = [
+    '你是小学英语老师，正在批改学生的口头翻译。',
+    '英文原句：' + en,
+    '参考译文：' + ref,
+    '学生说的：' + said,
+    '',
+    '评分要求：',
+    '1. 只看意思是否传达到位，用词和句式与参考不同不算错。',
+    '2. 学生是小学生，语气要鼓励，但错误要指出来。',
+    '3. 所有中文一律用简体。',
+    '4. 学生是口头作答，文字由语音识别转写。繁体字、同音字、标点差异都是',
+    '   转写造成的，不是学生的错，不要当作翻译错误。',
+    '',
+    '只输出 JSON，不要任何其他文字：',
+    '{"score":0-100的整数,"understood":true或false,',
+    '"missing":["漏掉的关键信息"],"errors":["译错的地方"],',
+    '"better":"更自然的说法","said":"学生说的话，转成简体"}',
+  ].join('\n');
+
+  let out;
+  try {
+    out = await env.AI.run(GRADE_MODEL, {
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 1200,
+      temperature: 0.2,
+    });
+  } catch (e) {
+    return json({ error: 'grade_failed', detail: String(e && e.message || e) }, 502);
+  }
+
+  // Reasoning models put the answer in different places and can spend the
+  // whole token budget on thinking; surface the shape when nothing parses.
+  // choices[] first: on this model `response` is an OBJECT, so reading it
+  // first turned the answer into the string "[object Object]".
+  let raw = '';
+  if (typeof out === 'string') raw = out;
+  else if (out) {
+    const c = out.choices && out.choices[0];
+    const fromChoice = c && ((c.message && c.message.content) || c.text);
+    raw = fromChoice || (typeof out.response === 'string' ? out.response : '')
+       || (typeof out.result === 'string' ? out.result : '');
+  }
+  raw = String(raw || '');
+  if (url.searchParams.get('debug') === '1') {
+    return json({ shape: out && typeof out === 'object' ? Object.keys(out) : typeof out,
+                  rawLen: raw.length, sample: raw.slice(0, 400), full: out });
+  }
+  // Models wrap JSON in prose or fences often enough that the client should
+  // never have to care; pull out the object here.
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (!m) return json({ error: 'unparsable', raw: raw.slice(0, 300) }, 502);
+  let parsed;
+  try { parsed = JSON.parse(m[0]); } catch (e) { return json({ error: 'unparsable', raw: m[0].slice(0, 300) }, 502); }
+
+  return json({
+    score: Math.max(0, Math.min(100, parseInt(parsed.score, 10) || 0)),
+    understood: !!parsed.understood,
+    missing: Array.isArray(parsed.missing) ? parsed.missing.slice(0, 4) : [],
+    errors: Array.isArray(parsed.errors) ? parsed.errors.slice(0, 4) : [],
+    better: String(parsed.better || '').slice(0, 200),
+    said: String(parsed.said || said).slice(0, 300),
+  });
+}
 
 // Text-to-speech from our own origin.
 //
