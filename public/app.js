@@ -403,7 +403,7 @@ const App = {
     // photo for a child.
     const headerPhoto = document.getElementById('header-photo');
     if (headerPhoto) {
-      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=38';
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=39';
       headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
@@ -2728,9 +2728,9 @@ const App = {
     html += '<div class="vr-sub">先复习昨天学的' + reviewWords.length + '个单词，再学新词</div>';
     reviewWords.forEach(function(w, i) {
       html += '<div class="vr-word-item">';
-      html += '<span class="vrw-emoji">' + (w.emoji || '📖') + '</span>';
+      html += '<span class="vrw-emoji tap-speak-sm" onclick="App.speak(\'' + w.word.replace(/'/g, "\\'") + '\')" title="点一下听发音">' + (w.emoji || '📖') + '</span>';
       html += '<div class="vrw-info"><div class="vrw-word">' + w.word + '</div><div class="vrw-meaning">' + w.meaning + '</div></div>';
-      html += '<button class="vrw-play" onclick="App.speak(\'' + w.word.replace(/'/g, "\\'") + '\')">🔊</button>';
+      html += '<button class="vrw-play" onclick="App.speak(\'' + w.word.replace(/'/g, "\\'") + '\')" aria-label="听发音"><svg class="icon icon-sm"><use href="#i-sound"/></svg></button>';
       html += '</div>';
     });
     html += '<button class="vocab-btn" style="margin-top:16px" onclick="App._finishReview(' + mi + ',' + dayIdx + ')">复习完成，开始学新词 →</button>';
@@ -2762,7 +2762,7 @@ const App = {
       html += '<div class="vc-score">答对 ' + this.state.vocabScore + ' / ' + maxScore + ' 题（' + scorePct + '%）</div>';
       html += '<div class="vc-word-list">';
       m.words.forEach(function(w) {
-        html += '<div class="vc-word-item"><span class="vcw-emoji">' + w.emoji + '</span><div class="vcw-info"><div class="vcw-word">' + w.word + '</div><div class="vcw-meaning">' + w.meaning + '</div></div><button class="vrw-play" onclick="App.speak(\'' + w.word.replace(/'/g, "\\'") + '\')">🔊</button></div>';
+        html += '<div class="vc-word-item"><span class="vcw-emoji tap-speak-sm" onclick="App.speak(\'' + w.word.replace(/'/g, "\\'") + '\')" title="点一下听发音">' + w.emoji + '</span><div class="vcw-info"><div class="vcw-word">' + w.word + '</div><div class="vcw-meaning">' + w.meaning + '</div></div><button class="vrw-play" onclick="App.speak(\'' + w.word.replace(/'/g, "\\'") + '\')" aria-label="听发音"><svg class="icon icon-sm"><use href="#i-sound"/></svg></button></div>';
       });
       html += '</div>';
       html += '<div style="font-size:13px;color:var(--text-sub);margin-top:8px">明天学习新单词时，会先复习这' + m.words.length + '个单词哦</div>';
@@ -2781,7 +2781,7 @@ const App = {
     html += '<div class="vocab-stage">';
 
     if (stage.type === 'learn') {
-      html += '<div class="vocab-emoji-card">' + word.emoji + '</div>';
+      html += this._wordImage(word, false);
       html += '<div class="vocab-word">' + word.word + '</div>';
       html += '<div class="vocab-phonetic">' + word.phonetic + '</div>';
       html += '<div class="vocab-meaning">' + word.meaning + '</div>';
@@ -2793,7 +2793,7 @@ const App = {
     } else if (stage.type === 'image_choice') {
       html += '<div class="auto-read-badge"><svg class="icon icon-sm speaking-anim"><use href="#i-sound"/></svg> 正在朗读…</div>';
       html += '<div class="vocab-meaning">' + stage.prompt + '</div>';
-      html += '<div class="vocab-emoji-card" style="width:100px;height:100px;font-size:52px">' + word.emoji + '</div>';
+      html += this._wordImage(word, true);
       html += '<div class="vocab-options" id="vo-' + mi + '" style="opacity:0.4;pointer-events:none">';
       stage.options.forEach((opt, oi) => {
         html += '<div class="vocab-option-card" onclick="App.checkVocabAnswer(' + mi + ',' + oi + ',' + stage.answer + ',' + dayIdx + ',' + m.words.length + ',' + word.stages.length + ')">' + opt + '</div>';
@@ -2809,7 +2809,7 @@ const App = {
       });
     } else if (stage.type === 'meaning_choice') {
       html += '<div class="auto-read-badge"><svg class="icon icon-sm speaking-anim"><use href="#i-sound"/></svg> 正在朗读…</div>';
-      html += '<div class="vocab-emoji-card" style="width:100px;height:100px;font-size:52px">' + word.emoji + '</div>';
+      html += this._wordImage(word, true);
       html += '<div class="vocab-word">' + word.word + '</div>';
       html += '<div class="vocab-phonetic">' + word.phonetic + '</div>';
       html += '<div class="vocab-meaning">' + stage.prompt + '</div>';
@@ -2854,7 +2854,7 @@ const App = {
 
       var hintText = answerChars.length === 1 ? '缺少一个字母' : '缺少 ' + answerChars.length + ' 个字母';
 
-      html += '<div class="vocab-emoji-card" style="width:100px;height:100px;font-size:52px">' + word.emoji + '</div>';
+      html += this._wordImage(word, true);
       html += '<div class="vocab-word">' + word.meaning + '</div>';
       html += '<div class="vocab-meaning">补全拼写</div>';
       html += '<div class="fs-12 text-sub" style="color:var(--primary)">' + hintText + '</div>';
@@ -3025,6 +3025,17 @@ const App = {
     btn.textContent = last ? '下一题' : '下一个单词';
   },
 
+  // Every word picture is a play button. Children reach for the picture, not
+  // for a separate speaker icon next to it.
+  _wordImage(word, big) {
+    var w = String(word.word || '').replace(/'/g, "\\'");
+    return '<div class="vocab-emoji-card tap-speak"'
+         + (big ? ' style="width:100px;height:100px;font-size:52px"' : '')
+         + ' onclick="App.speak(\'' + w + '\')" title="点一下听发音"'
+         + ' role="button" aria-label="听 ' + w + ' 的发音">'
+         + word.emoji + '<span class="tap-speak-badge"><svg class="icon icon-sm"><use href="#i-sound"/></svg></span></div>';
+  },
+
   // ===== Sound-alike matching =====
   // A syllable read correctly still comes back spelled differently: Whisper
   // wrote "No." for /noʊ/ (know), "Full." for ful, "T" for ti, "shine." for
@@ -3087,7 +3098,7 @@ const App = {
                     units: units.slice(), phase: 'pieces' };
 
     var html = '<div class="vocab-step-label">' + (kind === 'letter' ? '字母跟读' : '音节拼合') + '</div>';
-    html += '<div class="vocab-emoji-card" style="width:100px;height:100px;font-size:52px">' + word.emoji + '</div>';
+    html += this._wordImage(word, true);
     html += '<div class="vocab-word">' + word.word + '</div>';
     html += '<div class="vocab-phonetic">' + word.phonetic + '</div>';
     html += '<div class="read-instruction">按住每个格子读，松开结束</div>';
@@ -3964,7 +3975,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder"><img src="photo.jpeg?v=38" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=39" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>
