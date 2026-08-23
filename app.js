@@ -1,8 +1,11 @@
 /* eslint-disable */
-const TEACHER_PHONE = '13259532991';
+// TEACHER_PHONE now lives in api.js — role resolution is Api's job, so that
+// it can move to the Worker without touching this file.
 const App = {
   state: {
-    role: 'teacher',
+    // Empty until Api resolves a session. Was 'teacher', which only worked
+    // because isTeacher() used to compare the phone number instead.
+    role: '',
     userName: '',
     phone: '',
     className: '',
@@ -21,11 +24,13 @@ const App = {
     classes: [],
     audioEnabled: false,
     voices: [],
-    cloudStudents: {},
+    learnedWords: {},
+    speakingRecords: [],
+    stepIdx: 0,
   },
 
-  init() {
-    this.loadData();
+  async init() {
+    await this.loadData();
     this.loadVoices();
     if (typeof Cloud !== 'undefined') Cloud.init();
     // WeChat built-in browser: unlock audio as soon as WeixinJSBridge is
@@ -68,12 +73,11 @@ const App = {
   },
 
   // Auto-login from saved credentials
-  tryAutoLogin() {
+  async tryAutoLogin() {
     try {
-      const saved = localStorage.getItem('amy_saved_login');
-      if (saved) {
-        const creds = JSON.parse(saved);
-        if (creds.phone && creds.name) {
+      const creds = await Api.getSavedLogin();
+      if (creds) {
+        {
           // Fill in the form fields (in case auto-login needs to show them)
           const phoneInput = document.getElementById('login-phone');
           const nameInput = document.getElementById('login-name');
@@ -92,10 +96,10 @@ const App = {
           this.loadVoices();
           // Add one-time listener to unlock audio on first interaction
           this._setupAudioUnlock();
-          if (creds.phone === TEACHER_PHONE) {
+          const session = await Api.resolveSession(creds.phone, creds.name);
+          if (session.role === 'teacher') {
             this.state.role = 'teacher';
             this.state.className = '';
-            this.saveData();
             this.showApp();
           } else {
             this.state.role = 'user';
@@ -142,63 +146,62 @@ const App = {
   },
 
   // ===== Data =====
-  loadData() {
-    try {
-      const saved = localStorage.getItem('eng_hw_v6');
-      if (saved) {
-        const d = JSON.parse(saved);
-        this.state.answers = d.answers || {};
-        this.state.checkins = d.checkins || {};
-        this.state.errorBook = d.errorBook || [];
-        this.state.students = d.students || [];
-        this.state.parentStudents = d.parentStudents || {};
-        this.state.classes = d.classes || [];
-      }
-      // Migrate from v5 if v6 empty
-      if (this.state.students.length === 0) {
-        const v5 = localStorage.getItem('eng_hw_v5');
-        if (v5) {
-          const d5 = JSON.parse(v5);
-          this.state.students = d5.students || [];
-          this.state.checkins = d5.checkins || {};
-          this.state.parentStudents = d5.parentStudents || {};
-          this.state.classes = d5.classes || [];
-        }
-      }
-      // Migrate from v4
-      if (this.state.students.length === 0) {
-        const v4 = localStorage.getItem('eng_hw_v4');
-        if (v4) {
-          const d4 = JSON.parse(v4);
-          this.state.students = d4.students || [];
-          this.state.checkins = d4.checkins || {};
-          this.state.parentStudents = d4.parentStudents || {};
-          this.state.classes = d4.classes || [];
-        }
-      }
-      // Ensure classes has at least a default
-      if (this.state.classes.length === 0 && this.state.students.length > 0) {
-        this.state.classes = ['未分班'];
-      }
-    } catch(e) { console.warn('Load data error:', e); }
-  },
-
-  saveData() {
-    try {
-      localStorage.setItem('eng_hw_v6', JSON.stringify({
-        answers: this.state.answers,
-        checkins: this.state.checkins,
-        errorBook: this.state.errorBook,
-        students: this.state.students,
-        parentStudents: this.state.parentStudents,
-        classes: this.state.classes,
-      }));
-    } catch(e) { console.warn('Save data error:', e); }
+  // One read at startup. Api owns the storage format and the v5/v4 migration;
+  // the collections come back by reference, so App.state stays the in-memory
+  // source of truth for rendering while Api persists behind it.
+  async loadData() {
+    const d = await Api.loadState();
+    this.state.answers = d.answers;
+    this.state.checkins = d.checkins;
+    this.state.errorBook = d.errorBook;
+    this.state.students = d.students;
+    this.state.parentStudents = d.parentStudents;
+    this.state.classes = d.classes;
+    this.state.learnedWords = await Api.getLearnedWords();
   },
 
   // ===== Login =====
   isTeacher() {
-    return this.state.phone === TEACHER_PHONE;
+    return this.state.role === 'teacher';
+  },
+
+  // The id answers and recordings are filed under. Falls back to the phone
+  // number so a student whose roster row has not synced yet still records.
+  _myStudentId() {
+    const me = this.state.students.find(s => s.phone === this.state.phone);
+    return me ? me.id : ('s' + this.state.phone);
+  },
+
+  // How many questions a day contains — the denominator for the check-in.
+  // Counts exactly what the four recording entry points can answer, so a day
+  // can actually reach 'full'. Vocab and spelling drills are excluded: they
+  // are repeatable practice with no stable question identity.
+  _countDayQuestions(dayIdx) {
+    const day = HOMEWORK_DATA[dayIdx];
+    if (!day || !day.modules) return 0;
+    let n = 0;
+    day.modules.forEach(m => {
+      if (m.type === 'vocab') return;
+      if (m.questions) n += m.questions.length;
+      if (m.blanks) n += m.blanks.length;
+    });
+    return n;
+  },
+
+  // Single funnel for every answered question. Fire-and-forget: the DOM
+  // feedback the caller renders is what the child sees, not this.
+  _recordAnswer(dayIdx, moduleIdx, qIdx, value, correct) {
+    if (this.isTeacher() || !this.state.phone) return;
+    const sid = this._myStudentId();
+    Api.saveAnswer(sid, dayIdx, moduleIdx, qIdx, value, correct)
+      .then(res => res.recorded
+        ? Api.saveCheckin(sid, dayIdx, this._countDayQuestions(dayIdx))
+        : null)
+      .catch(e => console.warn('Record answer failed:', e));
+    // Answered right → move on by itself. Answered wrong → stay put, so the
+    // child can read the explanation and move on when they are ready.
+    if (correct) this._scheduleAdvance(1300);
+    else clearTimeout(this._advanceTimer);
   },
 
   isWeChat() {
@@ -238,7 +241,7 @@ const App = {
     }
   },
 
-  login() {
+  async login() {
     const phone = document.getElementById('login-phone').value.trim();
     const name = document.getElementById('login-name').value.trim();
     if (!phone || phone.length < 11) { alert('请输入正确的11位手机号'); return; }
@@ -258,11 +261,6 @@ const App = {
 
     this.state.phone = phone;
     this.state.userName = name;
-
-    // Save credentials for auto-login next time
-    try {
-      localStorage.setItem('amy_saved_login', JSON.stringify({ phone: phone, name: name }));
-    } catch(e) {}
 
     // Enable audio on user interaction (login click is a valid user gesture)
     this.state.audioEnabled = true;
@@ -289,11 +287,12 @@ const App = {
 
     this.loadVoices();
 
-    // Determine role by phone number
-    if (phone === TEACHER_PHONE) {
+    // Everything above ran synchronously inside the click so the audio
+    // element is unlocked. Only now is it safe to await.
+    const session = await Api.login(phone, name);
+    if (session.role === 'teacher') {
       this.state.role = 'teacher';
       this.state.className = '';
-      this.saveData();
       this.showApp();
     } else {
       this.state.role = 'user';
@@ -306,9 +305,11 @@ const App = {
   async registerStudent(phone, name) {
     // Save locally
     this.state.parentStudents[phone] = { name: name, class: '', approved: false };
+    await Api.saveParentStudent(phone, this.state.parentStudents[phone]);
+
     let existing = this.state.students.find(s => s.phone === phone);
     if (!existing) {
-      this.state.students.push({
+      existing = {
         id: 's' + Date.now(),
         name: name,
         phone: phone,
@@ -316,33 +317,27 @@ const App = {
         class: '',
         approved: false,
         registeredAt: new Date().toISOString()
-      });
+      };
+      this.state.students.push(existing);
     } else {
       // Update existing record
       existing.name = name;
       existing.registeredAt = existing.registeredAt || new Date().toISOString();
     }
-    this.saveData();
+    await Api.saveStudent(existing);
 
     // Upload to cloud (non-blocking)
     this.syncToCloud();
 
     // Check cloud for class assignment (teacher may have pre-assigned)
-    if (typeof Cloud !== 'undefined') {
-      try {
-        const cloudData = await Cloud.loadAll();
-        if (cloudData && cloudData.students) {
-          const cloudStudent = cloudData.students.find(s => s.phone === phone);
-          if (cloudStudent && cloudStudent.class) {
-            this.state.className = cloudStudent.class;
-            // Update local record
-            this.state.students = this.state.students.map(s =>
-              s.phone === phone ? { ...s, approved: true, class: cloudStudent.class } : s
-            );
-            this.saveData();
-          }
-        }
-      } catch(e) { console.warn('Cloud check error:', e); }
+    const mine = await Api.fetchMyAssignment(phone);
+    if (mine) {
+      this.state.className = mine.className;
+      // Update local record
+      this.state.students = this.state.students.map(s =>
+        s.phone === phone ? { ...s, approved: true, class: mine.className } : s
+      );
+      await Api.saveStudents(this.state.students);
     }
 
     // Go straight into the app - no waiting page!
@@ -356,9 +351,11 @@ const App = {
     if (wp) wp.classList.remove('hidden');
   },
 
-  logout() {
+  async logout() {
+    clearTimeout(this._advanceTimer);
+    this.state.stepIdx = 0;
     // Clear saved login so auto-login doesn't re-login
-    try { localStorage.removeItem('amy_saved_login'); } catch(e) {}
+    await Api.logout();
     document.getElementById('login-page').classList.remove('hidden');
     document.getElementById('main-app').classList.add('hidden');
     const wp = document.getElementById('waiting-page');
@@ -369,6 +366,10 @@ const App = {
     this.state.audioEnabled = false;
     this.state.phone = '';
     this.state.userName = '';
+    // Must clear too: isTeacher() reads role now, so a stale 'teacher' here
+    // would survive logout (it used to be derived from phone, cleared above).
+    this.state.role = '';
+    this.state.className = '';
   },
 
   showApp() {
@@ -379,6 +380,8 @@ const App = {
     // Default to the real today (teacher can still switch days for preview)
     this.state.currentTab = this.isTeacher() ? 'weekly' : 'today';
     this.state.currentDay = this.getTodayWeekdayIdx();
+    this.state.stepIdx = 0;          // always start the day at question 1
+    clearTimeout(this._advanceTimer);
     // Update header name - show student name or teacher label
     const headerName = document.getElementById('header-name');
     if (headerName) {
@@ -387,6 +390,13 @@ const App = {
       } else {
         headerName.textContent = this.state.userName || '同学';
       }
+    }
+    // Avatar follows the role: Amy's photo for the teacher, the students
+    // photo for a child.
+    const headerPhoto = document.getElementById('header-photo');
+    if (headerPhoto) {
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=23';
+      headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
     const badge = document.getElementById('class-badge');
@@ -774,10 +784,10 @@ const App = {
     indicators.forEach(function(el) {
       if (show) {
         el.classList.add('speaking');
-        el.innerHTML = '<span class="speaking-anim">\ud83d\udd0a</span> \u6b63\u5728\u6717\u8bfb...';
+        el.innerHTML = '<svg class="icon icon-sm speaking-anim"><use href="#i-sound"/></svg> \u6b63\u5728\u6717\u8bfb\u2026';
       } else {
         el.classList.remove('speaking');
-        el.innerHTML = '<span>\u2705</span> \u6717\u8bfb\u5b8c\u6210';
+        el.innerHTML = '<svg class="icon icon-sm"><use href="#i-check"/></svg> \u6717\u8bfb\u5b8c\u6210';
       }
     });
   },
@@ -878,70 +888,16 @@ const App = {
   },
 
   // ===== Cloud Sync =====
-  // Sync all data TO cloud (students + classes) - merge to avoid overwriting
+  // The merge itself lives in Api (see CloudSync in api.js) — it is an
+  // artefact of blob storage, not business logic. This function keeps only
+  // the parts that are: updating state and telling the user what happened.
   async syncToCloud() {
-    if (typeof Cloud === 'undefined') return;
+    if (!Api.cloudAvailable()) return;
     try {
-      // First load cloud data to merge
-      const cloudData = await Cloud.loadAll();
-
-      // Build merged student list
-      let mergedStudents = [...this.state.students];
-      if (cloudData && cloudData.students) {
-        cloudData.students.forEach(cs => {
-          if (cs && cs.phone) {
-            let local = mergedStudents.find(s => s.phone === cs.phone);
-            if (!local) {
-              // Cloud student not in local - add it
-              mergedStudents.push({
-                id: cs.id || ('s' + cs.phone),
-                name: cs.name,
-                phone: cs.phone,
-                parentPhone: cs.phone,
-                class: cs.class || '',
-                approved: cs.approved || false,
-                registeredAt: cs.registeredAt || new Date().toISOString()
-              });
-            } else {
-              // IMPORTANT: cloud is the source of truth for class/approved.
-              // Without this, a student device with a stale local record could
-              // overwrite (wipe) a class the teacher just assigned.
-              if (cs.class) local.class = cs.class;
-              if (cs.approved) local.approved = cs.approved;
-              if (cs.name) local.name = cs.name;
-            }
-          }
-        });
-      }
-
-      // Build merged classes
-      let mergedClasses = [...this.state.classes];
-      if (cloudData && cloudData.classes) {
-        cloudData.classes.forEach(c => {
-          if (c && !mergedClasses.includes(c)) mergedClasses.push(c);
-        });
-      }
-
-      // Save merged data to cloud
-      const data = {
-        students: mergedStudents.map(s => ({
-          id: s.id,
-          name: s.name,
-          phone: s.phone,
-          class: s.class || '',
-          approved: s.approved || false,
-          registeredAt: s.registeredAt || new Date().toISOString()
-        })),
-        classes: mergedClasses,
-        lastUpdated: new Date().toISOString()
-      };
-      const saveOk = await Cloud.saveAll(data);
-      this._reportSyncResult(saveOk);
-
-      // Also update local state with merged data
-      this.state.students = mergedStudents;
-      this.state.classes = mergedClasses;
-      this.saveData();
+      const res = await Api.syncUp(this.state.students, this.state.classes);
+      this._reportSyncResult(res.ok);
+      this.state.students = res.students;
+      this.state.classes = res.classes;
     } catch(e) {
       console.warn('Sync to cloud error:', e);
       this._reportSyncResult(false);
@@ -988,55 +944,16 @@ const App = {
   },
 
   // Sync all data FROM cloud (teacher loads student registrations)
+  // Merge logic lives in Api; this keeps the UI reactions.
   async syncFromCloud() {
-    if (typeof Cloud === 'undefined') return;
+    if (!Api.cloudAvailable()) return;
     try {
-      const cloudData = await Cloud.loadAll();
-      if (!cloudData) {
-        // Distinguish "cloud is empty" from "cloud unreachable":
-        // loadAll() sets lastError only on real network failures.
-        if (Cloud.lastError && Cloud.lastError.indexOf('网络') >= 0) {
-          this._reportSyncResult(false);
-        }
+      const res = await Api.syncDown(this.state.students, this.state.classes);
+      if (!res.ok) {
+        if (res.unreachable) this._reportSyncResult(false);
         return;
       }
       this._lastSyncOk = true;
-
-      // Merge students from cloud
-      if (cloudData.students && Array.isArray(cloudData.students)) {
-        cloudData.students.forEach(cs => {
-          if (cs && cs.phone) {
-            let local = this.state.students.find(s => s.phone === cs.phone);
-            if (local) {
-              // Update local with cloud data (cloud is source of truth for class/approved)
-              local.name = cs.name || local.name;
-              if (cs.class !== undefined) local.class = cs.class;
-              if (cs.approved !== undefined) local.approved = cs.approved;
-              local.registeredAt = cs.registeredAt || local.registeredAt;
-            } else {
-              // New student from cloud - add locally
-              this.state.students.push({
-                id: cs.id || ('s' + cs.phone),
-                name: cs.name,
-                phone: cs.phone,
-                parentPhone: cs.phone,
-                class: cs.class || '',
-                approved: cs.approved || false,
-                registeredAt: cs.registeredAt || new Date().toISOString()
-              });
-            }
-          }
-        });
-      }
-
-      // Merge classes from cloud
-      if (cloudData.classes && Array.isArray(cloudData.classes)) {
-        cloudData.classes.forEach(c => {
-          if (c && !this.state.classes.includes(c)) this.state.classes.push(c);
-        });
-      }
-
-      this.saveData();
 
       // Student side: keep own class assignment up to date.
       // When the teacher assigns a class, students pick it up here
@@ -1046,7 +963,6 @@ const App = {
         const cloudClass = me ? (me.class || '') : '';
         if (cloudClass && cloudClass !== this.state.className) {
           this.state.className = cloudClass;
-          this.saveData();
           // Update the class badge in the header right away
           const badge = document.getElementById('class-badge');
           if (badge) badge.textContent = cloudClass;
@@ -1212,34 +1128,50 @@ const App = {
     const bar = document.getElementById('tab-bar');
     const isTeacher = this.isTeacher();
     let tabs;
+    // Icons are sprite ids from the <symbol> set in index.html — no emoji.
     if (isTeacher) {
       tabs = [
-        { id: 'weekly', icon: '📋', name: '周计划' },
-        { id: 'daily', icon: '📅', name: '每日详情' },
-        { id: 'edit', icon: '✏️', name: '作业编辑' },
-        { id: 'checkin', icon: '📊', name: '打卡监控' },
-        { id: 'scores', icon: '📈', name: '成绩分析' },
-        { id: 'errors', icon: '❌', name: '错题本' },
-        { id: 'print', icon: '🖨️', name: '错题卷打印' },
-        { id: 'speaking', icon: '🎤', name: '口语记录' },
-        { id: 'students', icon: '👥', name: '学生管理' },
-        { id: 'classmgmt', icon: '🏫', name: '班级管理' },
+        { id: 'weekly', icon: 'i-list', name: '周计划' },
+        { id: 'daily', icon: 'i-calendar', name: '每日详情' },
+        { id: 'edit', icon: 'i-pencil', name: '作业编辑' },
+        { id: 'checkin', icon: 'i-chart', name: '打卡监控' },
+        { id: 'scores', icon: 'i-trend', name: '成绩分析' },
+        { id: 'errors', icon: 'i-close', name: '错题本' },
+        { id: 'print', icon: 'i-printer', name: '错题卷打印' },
+        { id: 'speaking', icon: 'i-mic', name: '口语记录' },
+        { id: 'students', icon: 'i-users', name: '学生管理' },
+        { id: 'classmgmt', icon: 'i-layers', name: '班级管理' },
       ];
     } else {
       // Non-teacher: see today's homework, own child progress, class comparison, own error book
       tabs = [
-        { id: 'today', icon: '📝', name: '今日作业' },
-        { id: 'myprogress', icon: '📊', name: '孩子打卡' },
-        { id: 'compare', icon: '🏆', name: '完成率对比' },
-        { id: 'myerrors', icon: '❌', name: '错题改错' },
+        { id: 'today', icon: 'i-doc', name: '今日作业' },
+        { id: 'myprogress', icon: 'i-chart', name: '孩子打卡' },
+        { id: 'compare', icon: 'i-trophy', name: '完成率对比' },
+        { id: 'myerrors', icon: 'i-close', name: '错题改错' },
       ];
     }
-    bar.innerHTML = tabs.map(t => `<button class="${t.id===this.state.currentTab?'active':''}" onclick="App.switchTab('${t.id}')"><span class="emoji">${t.icon}</span>${t.name}</button>`).join('');
+    bar.innerHTML = tabs.map(t => `<button class="${t.id===this.state.currentTab?'active':''}" onclick="App.switchTab('${t.id}')"><svg class="icon"><use href="#${t.icon}"/></svg>${t.name}</button>`).join('');
   },
 
-  switchTab(tab) {
+  async switchTab(tab) {
+    // A pending auto-advance must not fire after the child has navigated away,
+    // or it silently skips a question when they come back.
+    clearTimeout(this._advanceTimer);
     this.state.currentTab = tab;
     this.renderTabs();
+    // Speaking records live in IndexedDB, but renderers are synchronous.
+    // Pull them into state first, then render from the cache.
+    if (tab === 'speaking') {
+      try {
+        this.state.speakingRecords = await Api.getSpeakingRecords();
+        // Pair each score with its clip so the teacher can actually listen.
+        const clips = await Api.getRecordings({});
+        const byId = {};
+        clips.forEach(c => { byId[c.id] = c.url; });
+        this.state.speakingRecords.forEach(r => { r.audioUrl = byId[r.clipId] || null; });
+      } catch(e) { this.state.speakingRecords = []; }
+    }
     this.renderContent();
   },
 
@@ -1247,6 +1179,8 @@ const App = {
     const area = document.getElementById('content-area');
     const isTeacher = this.isTeacher();
     const tab = this.state.currentTab;
+    // Only the homework stage locks the page; every other view scrolls.
+    document.body.classList.toggle('stage-mode', !isTeacher && tab === 'today');
 
     if (isTeacher) {
       switch(tab) {
@@ -1340,7 +1274,7 @@ const App = {
           });
           html += '</div>';
           html += '<div class="q-answer">正确答案：' + String.fromCharCode(65+q.answer) + '</div>';
-          html += '<div class="q-explanation show"><div class="cn">📖 ' + (q.explanation_cn||'') + '</div><div class="en">📘 ' + (q.explanation_en||'') + '</div></div>';
+          html += '<div class="q-explanation show"><div class="cn">' + (q.explanation_cn||'') + '</div><div class="en">' + (q.explanation_en||'') + '</div></div>';
           if (q.pronunciation_tips) html += '<div class="fs-12 mt-8" style="color:var(--info)">🗣️ 发音提示：' + q.pronunciation_tips + '</div>';
           html += '</div>';
         });
@@ -1380,7 +1314,7 @@ const App = {
             html += '</div>';
           }
           html += '<div class="q-answer">正确答案：' + (q.options ? String.fromCharCode(65+q.answer) : q.answer) + '</div>';
-          html += '<div class="q-explanation show"><div class="cn">📖 ' + (q.explanation_cn||'') + '</div><div class="en">📘 ' + (q.explanation_en||'') + '</div></div>';
+          html += '<div class="q-explanation show"><div class="cn">' + (q.explanation_cn||'') + '</div><div class="en">' + (q.explanation_en||'') + '</div></div>';
           html += '</div>';
         });
       }
@@ -1577,8 +1511,11 @@ const App = {
       HOMEWORK_DATA.forEach((d, di) => {
         const k = s.id + '_d' + di;
         const ck = this.state.checkins[k];
-        if (ck && ck.done) {
-          doneCount++;
+        // A record exists from the first answer on. Show the dot either way —
+        // 'started but unfinished' is what the teacher most wants to see —
+        // but only count a finished day toward doneCount.
+        if (ck) {
+          if (ck.done) doneCount++;
           if (ck.correctRate) { totalCorrect += ck.correctRate; correctCount++; }
           const cls = ck.completed === 'partial' ? 'partial' : 'done';
           html += '<td><span class="checkin-dot ' + cls + '" title="' + ck.time + ' 正确率' + ck.correctRate + '%">✓</span></td>';
@@ -1627,19 +1564,18 @@ const App = {
   // ===== Teacher: Error Book =====
   renderErrorBook() {
     let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">❌ 班级错题本</h2>';
-    // Collect errors from checkin data
+    // Real wrong answers. This used to invent them: it took any student whose
+    // day-level correctRate was under 80 and flagged a random half of the
+    // questions as wrong, so the same page showed different errors on reload.
     const errors = [];
     HOMEWORK_DATA.forEach((day, di) => {
-      day.modules.forEach(m => {
+      day.modules.forEach((m, mi) => {
         if (m.questions) {
-          m.questions.forEach(q => {
+          m.questions.forEach((q, qi) => {
             const wrongStudents = [];
             this.state.students.forEach(s => {
-              const k = s.id + '_d' + di;
-              const ck = this.state.checkins[k];
-              if (ck && ck.done && ck.correctRate < 80 && Math.random() > 0.5) {
-                wrongStudents.push(s.name);
-              }
+              const a = this.state.answers[Api.answerKey(s.id, di, mi, qi)];
+              if (a && !a.correct) wrongStudents.push(s.name);
             });
             if (wrongStudents.length > 0) {
               errors.push({ day: day.day_cn, module: m.name_cn, question: q.question || q.sentence, answer: q.options ? String.fromCharCode(65+q.answer) : q.answer, explanation_cn: q.explanation_cn, explanation_en: q.explanation_en, students: wrongStudents });
@@ -1677,15 +1613,14 @@ const App = {
   genErrorSheet(sid) {
     const student = this.state.students.find(s => s.id === sid);
     if (!student) return;
-    // Collect this student's errors
+    // Collect this student's errors — the questions they actually got wrong.
     const errors = [];
     HOMEWORK_DATA.forEach((day, di) => {
-      day.modules.forEach(m => {
+      day.modules.forEach((m, mi) => {
         if (m.questions) {
-          m.questions.forEach(q => {
-            const k = student.id + '_d' + di;
-            const ck = this.state.checkins[k];
-            if (ck && ck.done && ck.correctRate < 85 && Math.random() > 0.4) {
+          m.questions.forEach((q, qi) => {
+            const a = this.state.answers[Api.answerKey(student.id, di, mi, qi)];
+            if (a && !a.correct) {
               errors.push({ day: day.day_cn, module: m.name_cn, q: q, type: m.type });
             }
           });
@@ -1711,7 +1646,7 @@ const App = {
 
     let html = '<div class="a4-print-area" id="a4-print-' + sid + '">';
     html += '<div class="a4-sheet" id="a4-sheet-' + sid + '">';
-    html += '<h1>🐰 英语错题巩固卷</h1>';
+    html += '<h1>英语错题巩固卷</h1>';
     html += '<div class="a4-info">姓名：___________  日期：___________  得分：___________</div>';
     if (errors.length > 0) {
       html += '<h3 style="margin:12px 0 8px">一、错题重做（共' + errors.length + '题）</h3>';
@@ -1740,7 +1675,7 @@ const App = {
         html += '</div>';
       });
     }
-    html += '<div style="margin-top:20px;text-align:center;font-size:10pt;color:#999">🐰 Amy老师英语打卡平台 | 错题更少，进步更快</div>';
+    html += '<div style="margin-top:20px;text-align:center;font-size:10pt;color:#999">Amy老师英语打卡平台 | 错题更少，进步更快</div>';
     html += '</div></div>';
 
     // Controls
@@ -1766,26 +1701,53 @@ const App = {
   doPrint() { window.print(); },
 
   // ===== Teacher: Speaking Records =====
+  // Was unreachable: it referenced an undefined `di` and threw on open, and
+  // the scores under it were Math.random(). Now it renders the real recording
+  // records, or an honest empty state when there are none.
   renderSpeakingRecords() {
-    let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">🎤 AI口语练习记录</h2>';
-    html += '<p class="text-sub mb-16">查看每个学生的口语练习成绩和发音问题</p>';
-    HOMEWORK_DATA.filter(d => d.is_speaking_day).forEach(day => {
+    let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">🎤 口语练习记录</h2>';
+    html += '<p class="text-sub mb-16">学生朗读录音的得分记录</p>';
+
+    const records = this.state.speakingRecords || [];
+    if (records.length === 0) {
+      html += '<div class="card text-center text-sub">暂无口语记录<br>' +
+              '<span class="fs-12">学生在字母/音节模块完成朗读后，记录会出现在这里</span></div>';
+      return html;
+    }
+
+    // Group by day, newest first within each day.
+    const byDay = {};
+    records.forEach(r => {
+      const k = r.dayIdx === undefined ? 'other' : r.dayIdx;
+      (byDay[k] = byDay[k] || []).push(r);
+    });
+
+    const nameOf = (sid) => {
+      const s = this.state.students.find(st => st.id === sid);
+      return s ? s.name : (sid || '未知学生');
+    };
+
+    Object.keys(byDay).sort((a, b) => a - b).forEach(k => {
+      const day = HOMEWORK_DATA[k];
+      const rows = byDay[k].slice().sort((a, b) => (b.at || '').localeCompare(a.at || ''));
       html += '<div class="card mb-16">';
-      html += '<div class="card-title">' + day.day_cn + '（' + this.getDayDateLabel(di, 0) + '）AI口语课</div>';
-      const speakingModule = day.modules.find(m => m.type === 'speaking');
-      if (speakingModule) {
-        html += '<table class="data-table"><thead><tr><th>学生</th><th>题目</th><th>得分</th><th>发音问题</th></tr></thead><tbody>';
-        this.state.students.forEach(s => {
-          speakingModule.questions.forEach((q, qi) => {
-            const score = 60 + Math.floor(Math.random() * 40);
-            const issues = score < 70 ? '发音不标准，需重读' : score < 85 ? '个别单词音调需注意' : '发音良好';
-            html += '<tr><td>' + s.name + '</td><td>Q' + (qi+1) + ': ' + q.sentence.substring(0, 30) + '...</td>';
-            html += '<td><span class="badge ' + (score>=85?'badge-success':score>=70?'badge-primary':'badge-danger') + '">' + score + '分</span></td>';
-            html += '<td class="fs-12">' + issues + '</td></tr>';
-          });
-        });
-        html += '</tbody></table>';
-      }
+      html += '<div class="card-title">' + (day ? day.day_cn + '（' + this.getDayDateLabel(Number(k), 0) + '）' : '未归类') + '</div>';
+      html += '<table class="data-table"><thead><tr><th>学生</th><th>内容</th><th>轮次</th><th>音量分</th><th>时间</th><th>录音</th></tr></thead><tbody>';
+      rows.forEach(r => {
+        const score = r.score || 0;
+        html += '<tr><td>' + nameOf(r.studentId) + '</td>';
+        html += '<td>' + (r.label || '-') + '</td>';
+        html += '<td>' + (r.round || 1) + '</td>';
+        html += '<td>' + score + '</td>';
+        html += '<td class="fs-12">' + (r.at ? r.at.slice(11, 16) : '-') + '</td>';
+        html += '<td>' + (r.audioUrl
+          ? '<audio controls preload="none" src="' + r.audioUrl + '" style="height:30px;max-width:200px"></audio>'
+          : '<span class="fs-12 text-sub">音频已失效</span>') + '</td></tr>';
+      });
+      html += '</tbody></table>';
+      // The volume-based score says nothing about pronunciation — say so
+      // rather than letting the teacher read it as an assessment.
+      html += '<p class="fs-12 text-sub mt-8">⚠️ 当前得分按音量计算，不代表发音准确度。请点开录音试听判断。</p>';
       html += '</div>';
     });
     return html;
@@ -1863,7 +1825,7 @@ const App = {
     const className = sel.value;
     student.class = className;
     student.approved = true;
-    this.saveData();
+    await Api.saveStudent(student);
     this.syncToCloud();
     this.renderContent();
   },
@@ -1874,9 +1836,8 @@ const App = {
     const student = this.state.students.find(s => s.id === sid || s.phone === sid);
     if (!student) return;
     // Delete locally
-    this.state.students = this.state.students.filter(s => s.id !== student.id && s.phone !== student.phone);
+    this.state.students = await Api.deleteStudent(student);
     delete this.state.parentStudents[student.phone];
-    this.saveData();
     this.syncToCloud();
     this.renderContent();
   },
@@ -1911,7 +1872,8 @@ const App = {
     };
     this.state.students.push(student);
     this.state.parentStudents[phone] = { name: name, class: cls, approved: !!cls };
-    this.saveData();
+    await Api.saveStudent(student);
+    await Api.saveParentStudent(phone, this.state.parentStudents[phone]);
     this.syncToCloud();
     this.closeModal();
     this.renderContent();
@@ -1923,7 +1885,7 @@ const App = {
     if (!student) return;
     student.class = '';
     student.approved = false;
-    this.saveData();
+    await Api.saveStudent(student);
     this.syncToCloud();
     this.renderContent();
   },
@@ -1986,7 +1948,7 @@ const App = {
     if (!name) { alert('请输入班级名称'); return; }
     if (this.state.classes.includes(name)) { alert('该班级已存在'); return; }
     this.state.classes.push(name);
-    this.saveData();
+    await Api.saveClasses(this.state.classes);
     this.syncToCloud();
     this.closeModal();
     this.renderContent();
@@ -2017,7 +1979,8 @@ const App = {
         s.class = newName;
       }
     });
-    this.saveData();
+    await Api.saveClasses(this.state.classes);
+    await Api.saveStudents(this.state.students);
     this.syncToCloud();
     this.closeModal();
     this.renderContent();
@@ -2038,7 +2001,8 @@ const App = {
       if (!confirm('确认删除班级"' + cls + '"？')) return;
     }
     this.state.classes = this.state.classes.filter(c => c !== cls);
-    this.saveData();
+    await Api.saveClasses(this.state.classes);
+    await Api.saveStudents(this.state.students);
     this.syncToCloud();
     this.renderContent();
   },
@@ -2049,7 +2013,7 @@ const App = {
     if (!student) return;
     student.class = '';
     student.approved = false;
-    this.saveData();
+    await Api.saveStudent(student);
     this.syncToCloud();
     this.renderContent();
   },
@@ -2068,6 +2032,10 @@ const App = {
       todayIdx = this.getTodayWeekdayIdx();
       this.state.currentDay = todayIdx;
     }
+    // Students get the one-question-per-screen stage. The teacher keeps the
+    // scrolling list — they preview whole days, not answer them.
+    if (!this.isTeacher()) return this.renderStage(todayIdx);
+
     const day = HOMEWORK_DATA[todayIdx];
     const dateLabel = this.getDayDateLabel(todayIdx, 0);
     let html = '<h2 style="color:var(--primary-dark);margin-bottom:8px">📝 今日作业</h2>';
@@ -2177,12 +2145,12 @@ const App = {
     this._speakingShuffle[mi + '-' + qi] = shuffled;
 
     let html = '<div class="speaking-card">';
-    html += '<div class="auto-read-badge"><span class="speaking-anim">🔊</span> 正在朗读...</div>';
+    html += '<div class="auto-read-badge"><svg class="icon icon-sm speaking-anim"><use href="#i-sound"/></svg> 正在朗读…</div>';
     html += '<div class="fs-12 text-sub">第' + (qi+1) + '题 / 共' + m.questions.length + '题</div>';
     html += '<div class="vocab-progress mt-8"><div class="fill" style="width:' + (qi/m.questions.length*100) + '%"></div></div>';
     html += '<div class="speak-sentence">' + q.sentence + '</div>';
     html += '<div class="speak-sentence-cn">' + q.sentence_cn + '</div>';
-    html += '<button class="speak-btn play" onclick="App.playSentence(' + mi + ',' + qi + ',\'' + dayIdx + '\')">🔊 重新听</button>';
+    html += '<button class="speak-btn play" onclick="App.playSentence(' + mi + ',' + qi + ',\'' + dayIdx + '\')"><svg class="icon icon-sm"><use href="#i-sound"/></svg> 重新听</button>';
     // Options disabled until reading finishes
     html += '<div class="speak-options" id="sp-opts-' + mi + '" style="opacity:0.4;pointer-events:none">';
     shuffled.options.forEach((o, oi) => {
@@ -2226,6 +2194,7 @@ const App = {
     var options = shuffled ? shuffled.options : q.options;
     const isCorrect = oi === correctAnswer;
     const selectedText = options[oi];
+    this._recordAnswer(dayIdx, mi, qi, selectedText, isCorrect);
 
     // Disable all options immediately
     const opts = document.querySelectorAll('#sp-opts-' + mi + ' .speak-option');
@@ -2235,7 +2204,7 @@ const App = {
     var waitEl = document.getElementById('sp-wait-' + mi);
     if (waitEl) {
       waitEl.style.display = 'block';
-      waitEl.textContent = '🔊 正在朗读答句，请认真听...';
+      waitEl.textContent = '正在朗读答句，请认真听…';
       waitEl.style.color = 'var(--primary)';
     }
 
@@ -2482,22 +2451,18 @@ const App = {
 
   // Save learned words for next-day review
   _saveLearnedWords(dayIdx, words) {
-    try {
-      var key = 'amy_learned_words';
-      var data = JSON.parse(localStorage.getItem(key) || '{}');
-      data['day_' + dayIdx] = words.map(function(w) {
-        return { word: w.word, meaning: w.meaning, emoji: w.emoji, phonetic: w.phonetic };
-      });
-      localStorage.setItem(key, JSON.stringify(data));
-    } catch(e) { console.warn('Save learned words error:', e); }
+    const slim = words.map(function(w) {
+      return { word: w.word, meaning: w.meaning, emoji: w.emoji, phonetic: w.phonetic };
+    });
+    this.state.learnedWords['day_' + dayIdx] = slim;
+    // Fire-and-forget: the in-memory copy above is what the renderer reads.
+    Api.saveLearnedWords(dayIdx, slim);
   },
 
-  // Get learned words for a specific day
+  // Get learned words for a specific day. Stays synchronous — it is called
+  // from inside a render function that builds HTML in one pass.
   _getLearnedWords(dayIdx) {
-    try {
-      var data = JSON.parse(localStorage.getItem('amy_learned_words') || '{}');
-      return data['day_' + dayIdx] || null;
-    } catch(e) { return null; }
+    return this.state.learnedWords['day_' + dayIdx] || null;
   },
 
   // Render review screen
@@ -2572,7 +2537,7 @@ const App = {
       // Auto-read the word
       this.autoSpeak(word.word);
     } else if (stage.type === 'image_choice') {
-      html += '<div class="auto-read-badge"><span class="speaking-anim">🔊</span> 正在朗读...</div>';
+      html += '<div class="auto-read-badge"><svg class="icon icon-sm speaking-anim"><use href="#i-sound"/></svg> 正在朗读…</div>';
       html += '<div class="vocab-meaning">' + stage.prompt + '</div>';
       html += '<div class="vocab-emoji-card" style="width:100px;height:100px;font-size:52px">' + word.emoji + '</div>';
       html += '<div class="vocab-options" id="vo-' + mi + '" style="opacity:0.4;pointer-events:none">';
@@ -2589,7 +2554,7 @@ const App = {
         if (w) w.style.display = 'none';
       });
     } else if (stage.type === 'meaning_choice') {
-      html += '<div class="auto-read-badge"><span class="speaking-anim">🔊</span> 正在朗读...</div>';
+      html += '<div class="auto-read-badge"><svg class="icon icon-sm speaking-anim"><use href="#i-sound"/></svg> 正在朗读…</div>';
       html += '<div class="vocab-emoji-card" style="width:100px;height:100px;font-size:52px">' + word.emoji + '</div>';
       html += '<div class="vocab-word">' + word.word + '</div>';
       html += '<div class="vocab-phonetic">' + word.phonetic + '</div>';
@@ -2962,8 +2927,12 @@ const App = {
         // Success — create audio playback + score
         var blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
         var audioUrl = URL.createObjectURL(blob);
-        // Score: based on max volume, mapped to 60-100 range
+        // NOTE: still a pure volume mapping, not pronunciation assessment.
+        // What changes here is that the clip and score now get persisted.
         var score = Math.min(100, Math.round(55 + maxVol * 1.5));
+        var round = type === 'letter'
+          ? (self._letterReadState ? self._letterReadState.round : 1)
+          : (self._syllableReadState ? self._syllableReadState.round : 1);
 
         el.classList.remove('reading');
         el.classList.add('read-done');
@@ -2972,13 +2941,22 @@ const App = {
         // Store score
         if (type === 'letter') {
           if (!self._letterScores) self._letterScores = {};
-          var lkey = mi + '-' + idx + '-' + (self._letterReadState ? self._letterReadState.round : 1);
-          self._letterScores[lkey] = score;
+          self._letterScores[mi + '-' + idx + '-' + round] = score;
         } else {
           if (!self._syllableScores) self._syllableScores = {};
-          var skey = mi + '-' + idx + '-' + (self._syllableReadState ? self._syllableReadState.round : 1);
-          self._syllableScores[skey] = score;
+          self._syllableScores[mi + '-' + idx + '-' + round] = score;
         }
+
+        // Persist clip + score. The blob used to die with the tab.
+        var recMeta = {
+          studentId: self._myStudentId(),
+          dayIdx: self.state.currentDay,
+          moduleIdx: mi, itemIdx: idx, round: round,
+          type: type, label: label, score: score
+        };
+        Api.uploadRecording(blob, recMeta).then(function(saved) {
+          return Api.submitSpeakingScore(Object.assign({ clipId: saved.id }, recMeta));
+        }).catch(function(e) { console.warn('Recording persist failed:', e); });
 
         // Show success with audio playback
         area.innerHTML = '<div style="text-align:center;margin-top:8px">' +
@@ -3185,11 +3163,12 @@ const App = {
     const inputs = document.querySelectorAll('[data-blank]');
     let correct = 0, total = m.blanks.length;
     let detail = '';
-    m.blanks.forEach(b => {
+    m.blanks.forEach((b, bi) => {
       const input = document.querySelector('[data-blank="' + b.id + '"]');
       const val = input.value.trim().toLowerCase();
       const ans = b.answer.toLowerCase();
       const isCorrect = val === ans;
+      this._recordAnswer(dayIdx, mi, bi, val, isCorrect);
       if (isCorrect) correct++;
       detail += '<div class="fs-12 mb-8"><span class="badge ' + (isCorrect?'badge-success':'badge-danger') + '">' + (isCorrect?'✅':'❌') + '</span> 空白' + b.id + '：你填 "' + (input.value||'(空)') + '" | 正确：' + b.answer + '</div>';
       if (isCorrect) { input.style.color = 'var(--success)'; input.style.borderColor = 'var(--success)'; }
@@ -3198,6 +3177,131 @@ const App = {
     const score = Math.round(correct / total * 100);
     const result = document.getElementById('writing-result-' + mi);
     result.innerHTML = '<div class="card mt-16" style="background:var(--primary-light)"><div class="card-title">📊 批改结果</div><div class="text-center mb-16"><span style="font-size:36px;font-weight:700;color:' + (score>=80?'var(--success)':score>=60?'var(--warning)':'var(--danger)') + '">' + score + '</span><span class="text-sub">分/100</span></div>' + detail + '<div class="q-explanation show mt-8"><div class="cn">📖 ' + (m.explanation_cn||'') + '</div><div class="en">📘 ' + (m.explanation_en||'') + '</div></div><div class="card mt-16" style="background:var(--success-light)"><div class="card-title fs-12">✅ 完整范文</div><div class="mt-8">' + m.full_text + '</div></div><div class="writing-banner mt-16">📝 请背诵这篇作文！明天将进行挖空默写测试</div></div>';
+  },
+
+  // ===== One question per screen =====
+  // Flattens the day into a linear list of steps. Modules with their own
+  // internal progression (vocab game, writing template) stay one step each;
+  // everything else contributes one step per question.
+  _buildSteps(dayIdx) {
+    const day = HOMEWORK_DATA[dayIdx];
+    const steps = [];
+    if (!day || !day.modules) return steps;
+    day.modules.forEach((m, mi) => {
+      if (m.type === 'vocabulary_game')       steps.push({ mi, kind: 'vocab' });
+      else if (m.type === 'writing_template') steps.push({ mi, kind: 'writing' });
+      else if (m.type === 'speaking' && m.questions)
+        m.questions.forEach((q, qi) => steps.push({ mi, qi, kind: 'speaking' }));
+      else if (m.questions)
+        m.questions.forEach((q, qi) => steps.push({ mi, qi, kind: 'question' }));
+    });
+    return steps;
+  },
+
+  // Advance after the child has seen the feedback. Debounced so a module
+  // that records several answers at once (writing) still advances once.
+  _scheduleAdvance(delay) {
+    if (this.isTeacher()) return;
+    clearTimeout(this._advanceTimer);
+    this._advanceTimer = setTimeout(() => this.nextStep(), delay || 1400);
+  },
+
+  nextStep() {
+    clearTimeout(this._advanceTimer);
+    this._stopCurrentAudio();
+    const steps = this._buildSteps(this.state.currentDay);
+    if (this.state.stepIdx < steps.length - 1) {
+      this.state.stepIdx++;
+      this.renderContent();
+    } else {
+      this.state.stepIdx = steps.length;   // -> completion screen
+      this.renderContent();
+    }
+  },
+
+  prevStep() {
+    clearTimeout(this._advanceTimer);
+    this._stopCurrentAudio();
+    if (this.state.stepIdx > 0) { this.state.stepIdx--; this.renderContent(); }
+  },
+
+  goToStep(i) {
+    clearTimeout(this._advanceTimer);
+    this._stopCurrentAudio();
+    this.state.stepIdx = i;
+    this.renderContent();
+  },
+
+  // The fixed, non-scrolling stage. Only the passage box scrolls internally
+  // so a long reading text stays reachable without the page moving.
+  renderStage(dayIdx) {
+    const day = HOMEWORK_DATA[dayIdx];
+    const steps = this._buildSteps(dayIdx);
+    if (steps.length === 0) return '<div class="card text-center text-sub">今天没有作业</div>';
+
+    if (this.state.stepIdx >= steps.length) {
+      const sid = this._myStudentId();
+      const ck = this.state.checkins[Api.checkinKey(sid, dayIdx)];
+      let done = '<div class="stage"><div class="stage-done">';
+      done += '<svg class="icon icon-xl"><use href="#i-check"/></svg>';
+      done += '<div class="sd-title">今天的作业做完了</div>';
+      if (ck) done += '<div class="sd-sub">答对 ' + (ck.answered - ck.wrongCount) + ' / ' + ck.answered + ' 题 · 正确率 ' + ck.correctRate + '%</div>';
+      done += '<button class="btn-primary-lg" onclick="App.goToStep(0)">再看一遍</button>';
+      done += '</div></div>';
+      return done;
+    }
+
+    const step = steps[this.state.stepIdx];
+    const m = day.modules[step.mi];
+
+    let html = '<div class="stage">';
+
+    // Head: module name + progress
+    html += '<div class="stage-head">';
+    html += '<span class="sh-name">' + m.name_cn + '</span>';
+    html += '<div class="stage-progress"><i style="width:' + Math.round((this.state.stepIdx) / steps.length * 100) + '%"></i></div>';
+    html += '<span class="sh-count">' + (this.state.stepIdx + 1) + ' / ' + steps.length + '</span>';
+    html += '</div>';
+
+    html += '<div class="stage-body">';
+    if (!this.state.audioEnabled) {
+      html += '<div class="audio-enable-banner"><div class="ae-title">点击开启语音朗读</div>';
+      html += '<div class="ae-desc">开启后，每道题会自动用纯正美音朗读英语</div>';
+      html += '<button class="ae-btn" onclick="App.enableAudio()">开启语音</button></div>';
+      html += '</div></div>';
+      return html;
+    }
+
+    if (step.kind === 'question') {
+      if (m.passage) {
+        html += '<div class="stage-passage"><div class="fs-12 text-sub mb-4">阅读材料</div>'
+             + (m.passage_cn ? '<p>' + m.passage_cn + '</p>' : '') + '<p>' + m.passage + '</p></div>';
+      }
+      if (m.audio_text) {
+        html += '<div class="mb-8"><button class="btn btn-outline btn-sm" onclick="App.speak(\'' + m.audio_text.replace(/'/g,"\\'") + '\')">听录音</button></div>';
+      }
+      html += '<div class="stage-q">' + this._renderOneQuestion(m, step.mi, step.qi, dayIdx) + '</div>';
+      const self = this;
+      setTimeout(function(){ self._autoSpeakQuestion(m, step.mi, step.qi, dayIdx); }, 250);
+    } else if (step.kind === 'speaking') {
+      html += '<div class="stage-q" id="sp-content-' + step.mi + '">'
+           + this.renderSpeakingQuestion(m, step.mi, step.qi, dayIdx) + '</div>';
+    } else if (step.kind === 'vocab') {
+      html += '<div class="stage-q">' + this.renderVocabGame(m, step.mi, dayIdx) + '</div>';
+    } else if (step.kind === 'writing') {
+      html += '<div class="stage-q stage-scroll">' + this.renderWritingTemplate(m, step.mi, dayIdx) + '</div>';
+    }
+    html += '</div>';
+
+    // Foot: manual navigation. Answering auto-advances, but a child who wants
+    // to move on (or back) should not be trapped.
+    html += '<div class="stage-foot">';
+    html += '<button class="btn-ghost" onclick="App.prevStep()"' + (this.state.stepIdx === 0 ? ' disabled' : '') + '>上一题</button>';
+    html += '<button class="btn-ghost" onclick="App.nextStep()">' + (this.state.stepIdx === steps.length - 1 ? '完成' : '下一题') + '</button>';
+    html += '</div>';
+
+    html += '</div>';
+    return html;
   },
 
   // Questions (reading, grammar, etc.)
@@ -3221,35 +3325,7 @@ const App = {
       html += '</div>';
     }
     m.questions.forEach((q, qi) => {
-      var qId = 'q-' + mi + '-' + qi;
-      html += '<div class="q-item" id="' + qId + '">';
-      html += '<div class="q-num">第' + (qi+1) + '题</div>';
-      // Add listen button if the question has audio content
-      // (audio_text like listening questions, OR English question text)
-      var qHasAudio = !!(q.audio_text || (q.question && /[a-zA-Z]/.test(q.question)));
-      if (qHasAudio) {
-        html += '<div class="auto-read-badge" id="arb-' + mi + '-' + qi + '"><span class="speaking-anim">🔊</span> 正在朗读...</div>';
-        html += '<div class="flex gap-8 mb-8"><button class="btn btn-outline btn-sm" onclick="App.replayQuestion(\'' + qId + '\',' + mi + ',' + qi + ',\'' + dayIdx + '\')">🔊 重新听</button></div>';
-      }
-      html += '<div class="q-text">' + q.question + '</div>';
-      if (q.options) {
-        // Options disabled until reading finishes
-        html += '<div class="q-options" id="qo-' + mi + '-' + qi + '" style="opacity:0.4;pointer-events:none">';
-        q.options.forEach((o, oi) => {
-          html += '<div class="q-option" onclick="App.selectAnswer(' + mi + ',' + qi + ',' + oi + ',' + dayIdx + ')">' + String.fromCharCode(65+oi) + '. ' + o + '</div>';
-        });
-        html += '</div>';
-        html += '<div class="listen-wait" id="qw-' + mi + '-' + qi + '" style="text-align:center;padding:8px;color:var(--text-sub);font-size:12px">⏳ 请先听完整朗读，再选择答案</div>';
-      } else {
-        html += '<input type="text" class="vocab-input" style="width:100%;letter-spacing:1px;border:1.5px solid #FFE0CC;margin-top:8px" id="fill-' + mi + '-' + qi + '" placeholder="填入答案" onkeyup="if(event.key===\'Enter\')App.submitFill(' + mi + ',' + qi + ',' + dayIdx + ')">';
-        html += '<button class="btn btn-primary btn-sm mt-8" onclick="App.submitFill(' + mi + ',' + qi + ',' + dayIdx + ')">确认</button>';
-      }
-      html += '<div class="q-answer" id="ans-' + mi + '-' + qi + '" style="display:none"></div>';
-      html += '<div class="q-explanation" id="exp-' + mi + '-' + qi + '"><div class="cn">📖 ' + (q.explanation_cn||'') + '</div><div class="en">📘 ' + (q.explanation_en||'') + '</div>';
-      // Correction area (only shows after wrong answer)
-      html += '<div class="card mt-8" style="background:var(--warning-light);display:none" id="correct-area-' + mi + '-' + qi + '"><div class="fs-12 mb-4">✏️ 请手写改正（输入你的改正答案）：</div><textarea rows="2" style="width:100%;border:1.5px solid #FFE0CC;border-radius:8px;padding:8px" placeholder="在此写出你的改正答案..."></textarea></div>';
-      html += '</div>';
-      html += '</div>';
+      html += this._renderOneQuestion(m, mi, qi, dayIdx);
     });
 
     // After rendering, auto-play audio_text first, then first question
@@ -3267,6 +3343,43 @@ const App = {
       }
     }, 300);
 
+    return html;
+  },
+
+  // One question's markup. Extracted so both the scrolling list (teacher
+  // preview) and the one-question-per-screen stage render identical DOM —
+  // the ids the answer handlers manipulate stay the same either way.
+  _renderOneQuestion(m, mi, qi, dayIdx) {
+    const q = m.questions[qi];
+    var qId = 'q-' + mi + '-' + qi;
+    let html = '<div class="q-item" id="' + qId + '">';
+    html += '<div class="q-num">第' + (qi+1) + '题</div>';
+    // Add listen button if the question has audio content
+    // (audio_text like listening questions, OR English question text)
+    var qHasAudio = !!(q.audio_text || (q.question && /[a-zA-Z]/.test(q.question)));
+    if (qHasAudio) {
+      html += '<div class="auto-read-badge" id="arb-' + mi + '-' + qi + '"><svg class="icon icon-sm speaking-anim"><use href="#i-sound"/></svg> 正在朗读…</div>';
+      html += '<div class="flex gap-8 mb-8"><button class="btn btn-outline btn-sm" onclick="App.replayQuestion(\'' + qId + '\',' + mi + ',' + qi + ',\'' + dayIdx + '\')"><svg class="icon icon-sm"><use href="#i-sound"/></svg> 重新听</button></div>';
+    }
+    html += '<div class="q-text">' + q.question + '</div>';
+    if (q.options) {
+      // Options disabled until reading finishes
+      html += '<div class="q-options" id="qo-' + mi + '-' + qi + '" style="opacity:0.4;pointer-events:none">';
+      q.options.forEach((o, oi) => {
+        html += '<div class="q-option" onclick="App.selectAnswer(' + mi + ',' + qi + ',' + oi + ',' + dayIdx + ')">' + String.fromCharCode(65+oi) + '. ' + o + '</div>';
+      });
+      html += '</div>';
+      html += '<div class="listen-wait" id="qw-' + mi + '-' + qi + '" style="text-align:center;padding:8px;color:var(--text-sub);font-size:12px">⏳ 请先听完整朗读，再选择答案</div>';
+    } else {
+      html += '<input type="text" class="vocab-input" style="width:100%;letter-spacing:1px;border:1.5px solid #FFE0CC;margin-top:8px" id="fill-' + mi + '-' + qi + '" placeholder="填入答案" onkeyup="if(event.key===\'Enter\')App.submitFill(' + mi + ',' + qi + ',' + dayIdx + ')">';
+      html += '<button class="btn btn-primary btn-sm mt-8" onclick="App.submitFill(' + mi + ',' + qi + ',' + dayIdx + ')">确认</button>';
+    }
+    html += '<div class="q-answer" id="ans-' + mi + '-' + qi + '" style="display:none"></div>';
+    html += '<div class="q-explanation" id="exp-' + mi + '-' + qi + '"><div class="cn">' + (q.explanation_cn||'') + '</div><div class="en">' + (q.explanation_en||'') + '</div>';
+    // Correction area (only shows after wrong answer)
+    html += '<div class="card mt-8" style="background:var(--warning-light);display:none" id="correct-area-' + mi + '-' + qi + '"><div class="fs-12 mb-4">请手写改正（输入你的改正答案）：</div><textarea rows="2" style="width:100%;border:1.5px solid #FFE0CC;border-radius:8px;padding:8px" placeholder="在此写出你的改正答案..."></textarea></div>';
+    html += '</div>';
+    html += '</div>';
     return html;
   },
 
@@ -3311,6 +3424,7 @@ const App = {
     const m = HOMEWORK_DATA[dayIdx].modules[mi];
     const q = m.questions[qi];
     const isCorrect = oi === q.answer;
+    this._recordAnswer(dayIdx, mi, qi, oi, isCorrect);
     const opts = document.querySelectorAll('#q-' + mi + '-' + qi + ' .q-option');
     opts.forEach((el, i) => {
       el.classList.remove('correct', 'wrong', 'selected');
@@ -3328,8 +3442,12 @@ const App = {
       document.getElementById('exp-' + mi + '-' + qi).classList.add('show');
       document.getElementById('correct-area-' + mi + '-' + qi).style.display = 'block';
     }
-    // Auto-speak the next question after a short delay
-    if (qi < m.questions.length - 1) {
+    // Auto-speak the next question after a short delay.
+    // Only in the teacher's scrolling list, where the next question is already
+    // on screen. In the student's one-question stage the next question is not
+    // shown yet, so reading it here would speak ahead of the transition —
+    // the stage speaks the question itself when it mounts.
+    if (this.isTeacher() && qi < m.questions.length - 1) {
       var self = this;
       setTimeout(function() {
         self._autoSpeakQuestion(m, mi, qi + 1, dayIdx);
@@ -3344,6 +3462,7 @@ const App = {
     const val = input.value.trim().toLowerCase();
     const ans = String(q.answer).toLowerCase();
     const isCorrect = val === ans;
+    this._recordAnswer(dayIdx, mi, qi, val, isCorrect);
     const ansEl = document.getElementById('ans-' + mi + '-' + qi);
     ansEl.style.display = 'block';
     if (isCorrect) {
@@ -3360,8 +3479,12 @@ const App = {
       document.getElementById('correct-area-' + mi + '-' + qi).style.display = 'block';
       this._playWrongSound();
     }
-    // Auto-speak the next question after a short delay
-    if (qi < m.questions.length - 1) {
+    // Auto-speak the next question after a short delay.
+    // Only in the teacher's scrolling list, where the next question is already
+    // on screen. In the student's one-question stage the next question is not
+    // shown yet, so reading it here would speak ahead of the transition —
+    // the stage speaks the question itself when it mounts.
+    if (this.isTeacher() && qi < m.questions.length - 1) {
       var self = this;
       setTimeout(function() {
         self._autoSpeakQuestion(m, mi, qi + 1, dayIdx);
@@ -3372,13 +3495,16 @@ const App = {
   // ===== Student/Parent: My Errors =====
   renderMyErrors() {
     let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">❌ 我的错题本</h2>';
-    // Demo: show some errors from all days
+    // The questions this child actually got wrong. Was a random 40% of every
+    // question in the week, reshuffled on each render.
+    const sid = this._myStudentId();
     const errors = [];
     HOMEWORK_DATA.forEach((day, di) => {
-      day.modules.forEach(m => {
+      day.modules.forEach((m, mi) => {
         if (m.questions) {
           m.questions.forEach((q, qi) => {
-            if (Math.random() > 0.6) {
+            const a = this.state.answers[Api.answerKey(sid, di, mi, qi)];
+            if (a && !a.correct) {
               errors.push({ day: day.day_cn, module: m.name_cn, q: q, dayIdx: di });
             }
           });
@@ -3425,10 +3551,13 @@ const App = {
   renderMyProgress() {
     const myName = this.state.userName;
     const myClass = this.state.className;
-    let myStudent = this.state.students.find(s => s.name === myName && s.class === myClass);
+    // Identify by phone, not by name+class. The teacher can rename a student
+    // and the cloud merge overwrites the local name, both of which broke the
+    // old name match — and the fallback minted a fresh 's'+Date.now() id on
+    // every render, so this student's check-ins could never be found.
+    let myStudent = this.state.students.find(s => s.phone === this.state.phone);
     if (!myStudent) {
-      // Auto-register if not found
-      myStudent = { id: 's' + Date.now(), name: myName, phone: this.state.phone, parentPhone: this.state.phone, class: myClass };
+      myStudent = { id: this._myStudentId(), name: myName, phone: this.state.phone, parentPhone: this.state.phone, class: myClass };
     }
     let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">📊 ' + myName + ' 的打卡情况</h2>';
     html += '<div class="card mb-16" style="background:var(--primary-light);border:none">';
@@ -3458,8 +3587,8 @@ const App = {
       const ck = this.state.checkins[k];
       html += '<tr><td>' + d.day_cn + '（' + this.getDayDateLabel(di, 0) + '）' + (this.isDayToday(di, 0) ? ' 📍今天' : '') + '</td>';
       html += '<td>' + (d.is_speaking_day ? 'AI口语日' : '练习日') + '</td>';
-      if (ck && ck.done) {
-        html += '<td><span class="badge badge-success">已打卡</span></td>';
+      if (ck) {
+        html += '<td><span class="badge ' + (ck.done ? 'badge-success">已打卡' : 'badge-warning">进行中') + '</span></td>';
         html += '<td>' + (ck.time||'-') + '</td>';
         html += '<td><span class="badge ' + (ck.correctRate>=85?'badge-success':ck.correctRate>=60?'badge-warning':'badge-danger') + '">' + (ck.correctRate||0) + '%</span></td>';
         html += '<td>' + (ck.wrongCount||0) + '</td>';
@@ -3524,8 +3653,8 @@ const App = {
       HOMEWORK_DATA.forEach((d, di) => {
         const k = student.id + '_d' + di;
         const ck = this.state.checkins[k];
-        if (ck && ck.done) {
-          doneCount++;
+        if (ck) {
+          if (ck.done) doneCount++;
           html += '<td><span class="checkin-dot ' + (ck.completed==='partial'?'partial':'done') + '" title="' + ck.time + '">✓</span></td>';
         } else {
           html += '<td><span class="checkin-dot undone">✗</span></td>';
@@ -3544,7 +3673,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder">🐰</div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=23" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>

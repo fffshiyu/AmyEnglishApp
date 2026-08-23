@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-title" content="Amy英语打卡">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon.svg">
-<title>🐰 Amy老师英语打卡平台</title>
+<title>Amy老师英语打卡平台</title>
 <link rel="icon" href="icon.svg">
 <style>
 :root{
@@ -25,26 +25,122 @@
   --shadow-lg:0 4px 20px rgba(255,140,66,.18);
   --radius:14px;--radius-sm:10px;
   --header-h:56px;
+
+  /* ---- ui-standard tokens (见 .claude/skills/ui-standard) ----
+     新界面一律使用这一组；旧变量待调色板整体收敛时移除。 */
+  --orange:#F07000; --orange-press:#C25A00; --orange-wash:#FFF4EA;
+  --ink:#17171A; --ink-2:#5B5B63; --ink-3:#8E8E97;
+  --line:#E6E6EA; --surface:#FFFFFF; --canvas:#F4F4F6;
+  --radius-pill:999px;
+  --shadow-1:0 1px 2px rgba(0,0,0,.04);
+  --shadow-2:0 4px 16px rgba(0,0,0,.06);
+  --container:1080px; --gutter:24px; --nav-h:84px;
+  --ease:cubic-bezier(.4,0,.2,1); --fast:.18s;
 }
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.6}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:var(--text);font-size:14px;line-height:1.6;
+  /* 灰白底 + 橘色圆，向外渐变到透明。
+     scroll（非 fixed）：长页面往下滚时圆会留在顶部区域，不会一路跟着视口跑。 */
+  background:
+    radial-gradient(circle 620px at 50% 380px, rgba(240,112,0,.12), rgba(240,112,0,0) 70%) no-repeat,
+    var(--canvas);
+  min-height:100vh}
+/* 不滚动的页面（登录页、一屏一题）把圆放在视口正中 */
+body.stage-mode,body:has(.login-page:not(.hidden)){
+  background:
+    radial-gradient(circle 620px at 50% 50%, rgba(240,112,0,.12), rgba(240,112,0,0) 70%) no-repeat fixed,
+    var(--canvas)}
 button{cursor:pointer;border:none;font-family:inherit;transition:.2s}
 input,textarea,select{font-family:inherit;font-size:14px;outline:none}
 
-/* Header */
-.app-header{height:var(--header-h);background:linear-gradient(135deg,#FF8C42,#FF6B35);color:#fff;display:flex;align-items:center;padding:0 16px;gap:12px;position:fixed;top:0;left:0;right:0;z-index:100;box-shadow:0 2px 12px rgba(255,107,53,.25)}
-.app-header .logo{display:flex;align-items:center;gap:8px;font-size:16px;font-weight:700;white-space:nowrap}
-.app-header .logo .icon{font-size:22px}
-.header-right{margin-left:auto;display:flex;align-items:center;gap:8px}
-.class-badge{background:rgba(255,255,255,.2);padding:4px 10px;border-radius:20px;font-size:12px;white-space:nowrap}
-.invite-btn{background:rgba(255,255,255,.25);color:#fff;padding:6px 12px;border-radius:20px;font-size:12px;white-space:nowrap}
-.invite-btn:hover{background:rgba(255,255,255,.35)}
+/* ===== Nav — 单行、白色、不通栏、两端圆弧 ===== */
+.container{max-width:var(--container);margin-inline:auto;padding-inline:var(--gutter)}
+
+.nav-wrap{position:sticky;top:0;z-index:100;padding-block:14px}
+.navbar{display:flex;align-items:center;gap:12px;min-height:56px;padding:6px;
+  background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--radius-pill);box-shadow:var(--shadow-1)}
+
+/* 左：标签。数量多时在自身内部横向滚动，不把用户区挤走 */
+.nav-tabs{display:flex;align-items:center;gap:2px;flex:1 1 auto;min-width:0;
+  overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none}
+.nav-tabs::-webkit-scrollbar{display:none}
+.nav-tabs button{display:inline-flex;align-items:center;gap:7px;flex:none;
+  padding:9px 14px;border-radius:var(--radius-pill);background:transparent;
+  color:var(--ink-2);font-size:14px;font-weight:500;white-space:nowrap;
+  transition:background var(--fast) var(--ease),color var(--fast) var(--ease)}
+.nav-tabs button:hover{background:var(--orange-wash);color:var(--ink)}
+.nav-tabs button.active{background:var(--orange);color:#fff}
+
+/* 右：头像、用户名、班级、退出 */
+.nav-user{display:flex;align-items:center;gap:8px;flex:none;padding-right:6px;
+  border-left:1px solid var(--line);padding-left:12px;margin-left:2px}
+.nav-user .photo{width:30px;height:30px;border-radius:50%;object-fit:cover;display:block;flex:none}
+#header-name{font-size:14px;font-weight:500;color:var(--ink);max-width:120px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.class-badge{font-size:12px;color:var(--ink-2);background:var(--canvas);
+  border-radius:var(--radius-pill);padding:4px 10px;white-space:nowrap;
+  max-width:150px;overflow:hidden;text-overflow:ellipsis}
+.icon-btn{display:inline-flex;align-items:center;justify-content:center;
+  width:34px;height:34px;border-radius:50%;background:transparent;color:var(--ink-2);
+  transition:background var(--fast) var(--ease),color var(--fast) var(--ease)}
+.icon-btn:hover{background:var(--canvas);color:var(--ink)}
+
+/* 图标 */
+.icon{width:20px;height:20px;flex:none;color:currentColor;display:block}
+.nav-tabs .icon{width:18px;height:18px}
+.icon-xl{width:44px;height:44px}
+.icon-sm{width:16px;height:16px;display:inline-block;vertical-align:-3px}
+
+/* ===== 一屏一题：页面不滚动，只有阅读材料在自己的框内滚 ===== */
+body.stage-mode,html:has(body.stage-mode){overflow:hidden;overscroll-behavior:none}
+/* 舞台自己撑满剩余高度，容器不再另加上下留白 */
+body.stage-mode .content-area{padding-block:0}
+/* --banner-h 由 JS 在安装横幅显示时设为其高度，否则为 0，
+   保证「上一题/下一题」永远不被横幅盖住。 */
+.stage{height:calc(100dvh - var(--nav-h) - var(--banner-h,0px));
+  display:flex;flex-direction:column;gap:10px;padding-bottom:12px}
+
+.stage-head{flex:none;display:flex;align-items:center;gap:12px}
+.sh-name{font-size:13px;font-weight:500;color:var(--ink-2);white-space:nowrap}
+.sh-count{font-size:13px;color:var(--ink-3);white-space:nowrap;
+  font-variant-numeric:tabular-nums}
+.stage-progress{flex:1;height:4px;background:var(--line);border-radius:var(--radius-pill);overflow:hidden}
+.stage-progress i{display:block;height:100%;background:var(--orange);
+  border-radius:var(--radius-pill);transition:width .3s var(--ease)}
+
+.stage-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:10px;
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  padding:20px;overflow:hidden}
+/* 阅读材料：可压缩，内部滚动，页面本身不动 */
+.stage-passage{flex:0 1 auto;min-height:0;overflow-y:auto;
+  background:var(--canvas);border-radius:var(--radius-sm);padding:14px;font-size:14px}
+.stage-passage p+p{margin-top:8px}
+.stage-q{flex:1 1 auto;min-height:0;overflow-y:auto}
+.stage-q .q-item{padding:0;border:none}
+
+.stage-foot{flex:none;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.btn-ghost{background:transparent;color:var(--ink-2);font-size:14px;font-weight:500;
+  padding:9px 16px;border-radius:var(--radius-pill)}
+.btn-ghost:hover:not(:disabled){background:var(--surface);color:var(--ink)}
+.btn-ghost:disabled{color:var(--ink-3);opacity:.5;cursor:default}
+
+.stage-done{height:100%;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:12px;color:var(--orange)}
+.sd-title{font-size:20px;font-weight:600;color:var(--ink);letter-spacing:-.01em}
+.sd-sub{font-size:14px;color:var(--ink-2)}
+.btn-primary-lg{margin-top:8px;background:var(--orange);color:#fff;font-size:15px;
+  font-weight:500;padding:12px 28px;border-radius:var(--radius-pill)}
+.btn-primary-lg:hover{background:var(--orange-press)}
 
 /* Login */
-.login-page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:12px;background:linear-gradient(135deg,#FFF0E5 0%,#FFE4D1 40%,#FFD6C0 100%)}
+/* 无自有底色：沿用 body 的「灰白 + 正中橘色圆」 */
+.login-page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:12px}
 .login-box{background:var(--card);border-radius:20px;padding:32px 24px;max-width:380px;width:100%;box-shadow:var(--shadow-lg)}
 .login-box-compact{padding:20px 18px;max-width:360px}
 .login-box .rabbit{font-size:48px;text-align:center;margin-bottom:8px}
+.login-photo{text-align:center;margin-bottom:8px}
+.login-photo img{width:56px;height:56px;border-radius:50%;object-fit:cover;box-shadow:0 2px 8px rgba(255,140,66,.25)}
 .login-box h2{text-align:center;font-size:20px;margin-bottom:6px;color:var(--primary-dark)}
 .login-box .subtitle{text-align:center;color:var(--text-sub);font-size:13px;margin-bottom:24px}
 .role-select{display:flex;gap:8px;margin-bottom:16px}
@@ -58,13 +154,10 @@ input,textarea,select{font-family:inherit;font-size:14px;outline:none}
 .login-btn:hover{background:var(--primary-dark)}
 .login-hint{text-align:center;margin-top:12px;font-size:12px;color:var(--text-sub)}
 
-/* Layout */
-#app{padding-top:var(--header-h);min-height:100vh}
-.tab-bar{display:flex;gap:4px;padding:8px 12px;background:var(--card);overflow-x:auto;position:sticky;top:var(--header-h);z-index:50;box-shadow:0 2px 8px rgba(255,140,66,.08)}
-.tab-bar button{padding:8px 14px;border-radius:20px;background:transparent;color:var(--text-sub);font-size:13px;white-space:nowrap;display:flex;align-items:center;gap:4px;transition:.2s}
-.tab-bar button.active{background:linear-gradient(135deg,#FF8C42,#FF6B35);color:#fff;box-shadow:0 2px 8px rgba(255,140,66,.3)}
-.tab-bar button .emoji{font-size:15px}
-.content-area{padding:16px;max-width:1200px;margin:0 auto}
+/* Layout — 导航与内容共用同一容器，左边缘对齐 */
+#app{min-height:100vh}
+.content-area{max-width:var(--container);margin-inline:auto;
+  padding:8px var(--gutter) 32px}
 
 /* Cards */
 .card{background:var(--card);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow);margin-bottom:12px}
@@ -250,11 +343,16 @@ input,textarea,select{font-family:inherit;font-size:14px;outline:none}
 
 /* Responsive */
 @media(max-width:768px){
-  .app-header{padding:0 8px}
-  .app-header .logo span:not(.icon):not(#header-name){display:none}
-  .app-header .logo #header-name{display:inline-block;font-size:13px;max-width:100px}
+  :root{--gutter:14px}
+  .nav-wrap{padding-block:10px}
+  /* 仍是一行：标签自行滚动，右侧只留头像和退出 */
+  .navbar{min-height:50px;padding:5px}
+  .nav-user{gap:6px;padding-left:8px}
+  #header-name{display:none}
   .class-badge{display:none}
-  .content-area{padding:10px}
+  #invite-btn-header,#settings-btn-header{display:none !important}
+  .nav-tabs button{font-size:13px;padding:8px 11px;gap:6px}
+  .content-area{padding:6px var(--gutter) 24px}
   .day-grid{grid-template-columns:1fr 1fr}
   .a4-sheet{width:100%;min-height:auto;padding:16px 12px;font-size:11pt}
   .modal{max-width:100%;max-height:90vh}
@@ -272,8 +370,6 @@ input,textarea,select{font-family:inherit;font-size:14px;outline:none}
   .day-card .day-modules{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .stat-box .label{font-size:10px}
   .q-option{font-size:12px;padding:10px 8px}
-  .tab-bar{padding:6px 8px}
-  .tab-bar button{font-size:12px;padding:6px 10px}
   .writing-essay{font-size:14px;padding:14px}
   .module-body{padding:12px}
   .login-box-compact{padding:16px 14px;max-width:340px}
@@ -455,7 +551,7 @@ input,textarea,select{font-family:inherit;font-size:14px;outline:none}
 <!-- Login Page -->
 <div id="login-page" class="login-page">
   <div class="login-box login-box-compact">
-    <div class="rabbit" style="margin-bottom:4px"><svg width="56" height="56" viewBox="0 0 100 100"><defs><linearGradient id="lg2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFE5CC"/><stop offset="1" stop-color="#FFB380"/></linearGradient></defs><g><ellipse cx="35" cy="22" rx="8" ry="17" fill="url(#lg2)" transform="rotate(-22 35 22)"/><ellipse cx="36" cy="24" rx="4" ry="11" fill="#FFB6C1" transform="rotate(-22 36 24)" opacity="0.85"/><animateTransform attributeName="transform" type="rotate" values="0 35 8;-5 35 8;0 35 8" dur="3s" repeatCount="indefinite"/></g><g><ellipse cx="65" cy="18" rx="8" ry="17" fill="url(#lg2)" transform="rotate(8 65 18)"/><ellipse cx="65" cy="20" rx="4" ry="11" fill="#FFB6C1" transform="rotate(8 65 20)" opacity="0.85"/><animateTransform attributeName="transform" type="rotate" values="0 65 8;5 65 8;0 65 8" dur="3s" begin="0.5s" repeatCount="indefinite"/></g><circle cx="27" cy="11" r="3.5" fill="#FF6B9D"/><circle cx="27" cy="11" r="1.5" fill="#FFD700"/><ellipse cx="50" cy="55" rx="31" ry="27" fill="url(#lg2)"/><ellipse cx="26" cy="60" rx="6" ry="4" fill="#FF9FB5" opacity="0.5"/><ellipse cx="74" cy="60" rx="6" ry="4" fill="#FF9FB5" opacity="0.5"/><ellipse cx="37" cy="50" rx="7" ry="8" fill="#3D2E1F"/><circle cx="39" cy="47" r="3" fill="#fff"/><circle cx="35" cy="53" r="1.8" fill="#fff" opacity="0.5"/><ellipse cx="63" cy="50" rx="7" ry="8" fill="#3D2E1F"/><circle cx="65" cy="47" r="3" fill="#fff"/><circle cx="61" cy="53" r="1.8" fill="#fff" opacity="0.5"/><path d="M50 58 C46 55 42 57 42 60 C42 63 50 67 50 67 C50 67 58 63 58 60 C58 57 54 55 50 58 Z" fill="#FF6B9D"/><path d="M50 67 L50 69" stroke="#3D2E1F" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M50 69 Q45 72 41 70" stroke="#3D2E1F" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M50 69 Q55 72 59 70" stroke="#3D2E1F" stroke-width="2" fill="none" stroke-linecap="round"/><ellipse cx="50" cy="71" rx="1.8" ry="1.3" fill="#FF6B9D" opacity="0.7"/></svg></div>
+    <div class="login-photo" style="margin-bottom:4px"><img src="photo.jpeg?v=23" alt="Amy老师英语打卡" width="56" height="56"></div>
     <h2 style="font-size:18px;margin-bottom:2px">Amy老师英语打卡</h2>
     <p class="subtitle" style="font-size:12px;margin-bottom:14px">登录打卡，每天进步一点点</p>
     <div class="form-group" style="margin-bottom:10px">
@@ -481,7 +577,7 @@ input,textarea,select{font-family:inherit;font-size:14px;outline:none}
 <!-- Waiting Page (for unapproved students) -->
 <div id="waiting-page" class="login-page hidden">
   <div class="login-box">
-    <div class="rabbit"><svg width="56" height="56" viewBox="0 0 100 100"><defs><linearGradient id="wg2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFE5CC"/><stop offset="1" stop-color="#FFB380"/></linearGradient></defs><g><ellipse cx="35" cy="22" rx="8" ry="17" fill="url(#wg2)" transform="rotate(-22 35 22)"/><ellipse cx="36" cy="24" rx="4" ry="11" fill="#FFB6C1" transform="rotate(-22 36 24)" opacity="0.85"/><animateTransform attributeName="transform" type="rotate" values="0 35 8;-5 35 8;0 35 8" dur="3s" repeatCount="indefinite"/></g><g><ellipse cx="65" cy="18" rx="8" ry="17" fill="url(#wg2)" transform="rotate(8 65 18)"/><ellipse cx="65" cy="20" rx="4" ry="11" fill="#FFB6C1" transform="rotate(8 65 20)" opacity="0.85"/><animateTransform attributeName="transform" type="rotate" values="0 65 8;5 65 8;0 65 8" dur="3s" begin="0.5s" repeatCount="indefinite"/></g><circle cx="27" cy="11" r="3.5" fill="#FF6B9D"/><circle cx="27" cy="11" r="1.5" fill="#FFD700"/><ellipse cx="50" cy="55" rx="31" ry="27" fill="url(#wg2)"/><ellipse cx="26" cy="60" rx="6" ry="4" fill="#FF9FB5" opacity="0.5"/><ellipse cx="74" cy="60" rx="6" ry="4" fill="#FF9FB5" opacity="0.5"/><ellipse cx="37" cy="50" rx="7" ry="8" fill="#3D2E1F"/><circle cx="39" cy="47" r="3" fill="#fff"/><circle cx="35" cy="53" r="1.8" fill="#fff" opacity="0.5"/><ellipse cx="63" cy="50" rx="7" ry="8" fill="#3D2E1F"/><circle cx="65" cy="47" r="3" fill="#fff"/><circle cx="61" cy="53" r="1.8" fill="#fff" opacity="0.5"/><path d="M50 58 C46 55 42 57 42 60 C42 63 50 67 50 67 C50 67 58 63 58 60 C58 57 54 55 50 58 Z" fill="#FF6B9D"/><path d="M50 67 L50 69" stroke="#3D2E1F" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M50 69 Q45 72 41 70" stroke="#3D2E1F" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M50 69 Q55 72 59 70" stroke="#3D2E1F" stroke-width="2" fill="none" stroke-linecap="round"/><ellipse cx="50" cy="71" rx="1.8" ry="1.3" fill="#FF6B9D" opacity="0.7"/></svg></div>
+    <div class="login-photo"><img src="photo.jpeg?v=23" alt="Amy老师英语打卡" width="56" height="56"></div>
     <h2>等待老师审核</h2>
     <p class="subtitle">你的注册信息已提交</p>
     <div class="card" style="background:var(--warning-light);text-align:center;padding:20px;margin:16px 0">
@@ -508,28 +604,58 @@ input,textarea,select{font-family:inherit;font-size:14px;outline:none}
 
 </div>
 <div id="main-app" class="hidden">
-  <header class="app-header">
-    <div class="logo"><span class="icon rabbit-icon"><svg width="28" height="28" viewBox="0 0 100 100"><defs><linearGradient id="hg2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFE5CC"/><stop offset="1" stop-color="#FFB380"/></linearGradient></defs><g><ellipse cx="35" cy="22" rx="8" ry="17" fill="url(#hg2)" transform="rotate(-22 35 22)"/><ellipse cx="36" cy="24" rx="4" ry="11" fill="#FFB6C1" transform="rotate(-22 36 24)" opacity="0.85"/><animateTransform attributeName="transform" type="rotate" values="0 35 8;-5 35 8;0 35 8" dur="3s" repeatCount="indefinite"/></g><g><ellipse cx="65" cy="18" rx="8" ry="17" fill="url(#hg2)" transform="rotate(8 65 18)"/><ellipse cx="65" cy="20" rx="4" ry="11" fill="#FFB6C1" transform="rotate(8 65 20)" opacity="0.85"/><animateTransform attributeName="transform" type="rotate" values="0 65 8;5 65 8;0 65 8" dur="3s" begin="0.5s" repeatCount="indefinite"/></g><circle cx="27" cy="11" r="3.5" fill="#FF6B9D"/><circle cx="27" cy="11" r="1.5" fill="#FFD700"/><ellipse cx="50" cy="55" rx="31" ry="27" fill="url(#hg2)"/><ellipse cx="26" cy="60" rx="6" ry="4" fill="#FF9FB5" opacity="0.5"/><ellipse cx="74" cy="60" rx="6" ry="4" fill="#FF9FB5" opacity="0.5"/><ellipse cx="37" cy="50" rx="7" ry="8" fill="#3D2E1F"/><circle cx="39" cy="47" r="3" fill="#fff"/><circle cx="35" cy="53" r="1.8" fill="#fff" opacity="0.5"/><ellipse cx="63" cy="50" rx="7" ry="8" fill="#3D2E1F"/><circle cx="65" cy="47" r="3" fill="#fff"/><circle cx="61" cy="53" r="1.8" fill="#fff" opacity="0.5"/><path d="M50 58 C46 55 42 57 42 60 C42 63 50 67 50 67 C50 67 58 63 58 60 C58 57 54 55 50 58 Z" fill="#FF6B9D"/><path d="M50 67 L50 69" stroke="#3D2E1F" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M50 69 Q45 72 41 70" stroke="#3D2E1F" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M50 69 Q55 72 59 70" stroke="#3D2E1F" stroke-width="2" fill="none" stroke-linecap="round"/><ellipse cx="50" cy="71" rx="1.8" ry="1.3" fill="#FF6B9D" opacity="0.7"/></svg></span><span id="header-name" style="font-size:14px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Amy老师英语打卡</span></div>
-    <div class="header-right">
-      <span class="class-badge" id="class-badge"></span>
-      <button class="invite-btn" id="invite-btn-header" onclick="App.showInvite()">🔗 邀请</button>
-      <button class="invite-btn" id="settings-btn-header" onclick="App.showSettings()">⚙️ 设置</button>
-      <button class="invite-btn" onclick="App.logout()">退出</button>
+  <div class="nav-wrap">
+    <div class="container">
+      <nav class="navbar">
+        <div class="nav-tabs" id="tab-bar"></div>
+        <div class="nav-user">
+          <img id="header-photo" class="photo" src="photo.jpeg?v=23" alt="">
+          <span id="header-name">Amy老师英语打卡</span>
+          <span class="class-badge" id="class-badge"></span>
+          <button class="icon-btn" id="invite-btn-header" onclick="App.showInvite()" title="邀请" aria-label="邀请"><svg class="icon"><use href="#i-link"/></svg></button>
+          <button class="icon-btn" id="settings-btn-header" onclick="App.showSettings()" title="设置" aria-label="设置"><svg class="icon"><use href="#i-settings"/></svg></button>
+          <button class="icon-btn" onclick="App.logout()" title="退出" aria-label="退出"><svg class="icon"><use href="#i-logout"/></svg></button>
+        </div>
+      </nav>
     </div>
-  </header>
+  </div>
 
-  <div class="tab-bar" id="tab-bar"></div>
   <div class="content-area" id="content-area"></div>
 </div>
+
+<!-- Icon sprite — 24x24 画布 / 1.5px 线宽 / 纯描边 / currentColor -->
+<svg style="display:none" aria-hidden="true" focusable="false"><defs>
+<g id="ico" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</defs>
+<symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+<symbol id="i-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 10h18M8 3v4M16 3v4"/></symbol>
+<symbol id="i-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19.5 8.5a2.83 2.83 0 0 0-4-4L4 16v4Z"/><path d="M14 6.5l3.5 3.5"/></symbol>
+<symbol id="i-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M6.5 21v-7M12 21V5M17.5 21v-10"/></symbol>
+<symbol id="i-trend" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5.5-5.5 4 4L21 7"/><path d="M15.5 7H21v5.5"/></symbol>
+<symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+<symbol id="i-printer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8V3.5h10V8"/><path d="M7 17H4.5A1.5 1.5 0 0 1 3 15.5v-5A2.5 2.5 0 0 1 5.5 8h13A2.5 2.5 0 0 1 21 10.5v5a1.5 1.5 0 0 1-1.5 1.5H17"/><rect x="7" y="14" width="10" height="6.5" rx="1.5"/></symbol>
+<symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"/><path d="M12 18v3"/></symbol>
+<symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.2 20a5.8 5.8 0 0 1 11.6 0"/><path d="M16.2 5.2a3.2 3.2 0 0 1 0 5.6"/><path d="M17.6 14.6A5.8 5.8 0 0 1 20.8 20"/></symbol>
+<symbol id="i-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.2 21 8l-9 4.8L3 8l9-4.8Z"/><path d="M3.4 13 12 17.6 20.6 13"/></symbol>
+<symbol id="i-doc" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7.5A2.5 2.5 0 0 0 5 5.5v13A2.5 2.5 0 0 0 7.5 21h9a2.5 2.5 0 0 0 2.5-2.5V8l-5-5Z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h5"/></symbol>
+<symbol id="i-trophy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4h10v5a5 5 0 0 1-10 0V4Z"/><path d="M7 6H4.4a3.4 3.4 0 0 0 3 4.8M17 6h2.6a3.4 3.4 0 0 1-3 4.8"/><path d="M12 14v4M8.5 21h7"/></symbol>
+<symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.2 13.8a4 4 0 0 0 5.66 0l3-3a4 4 0 1 0-5.66-5.66l-1.5 1.5"/><path d="M13.8 10.2a4 4 0 0 0-5.66 0l-3 3a4 4 0 1 0 5.66 5.66l1.5-1.5"/></symbol>
+<symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7.5h9M18.5 7.5H20M4 16.5h1.5M11 16.5h9"/><circle cx="15.5" cy="7.5" r="2.4"/><circle cx="8.2" cy="16.5" r="2.4"/></symbol>
+<symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 4H6.5A2.5 2.5 0 0 0 4 6.5v11A2.5 2.5 0 0 0 6.5 20h3"/><path d="M16 8.5l3.5 3.5-3.5 3.5M19.5 12H9.5"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12.3l2.7 2.7L16 9.5"/></symbol>
+<symbol id="i-sound" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6.5 9H3v6h3.5L11 19V5Z"/><path d="M15.5 9.5a3.5 3.5 0 0 1 0 5M18.5 7a7 7 0 0 1 0 10"/></symbol>
+</svg>
 
 <!-- Modal -->
 <div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)App.closeModal()">
   <div class="modal" id="modal-box"></div>
 </div>
 
-<script src="cloud.js?v=21"></script>
-<script src="data.js?v=21"></script>
-<script src="app.js?v=21"></script>
+<script src="cloud.js?v=23"></script>
+<script src="data.js?v=23"></script>
+<!-- api.js must load before app.js: app.js calls Api at init. -->
+<script src="api.js?v=23"></script>
+<script src="app.js?v=23"></script>
 <script>
 // Register Service Worker for PWA
 if ('serviceWorker' in navigator) {
@@ -559,15 +685,22 @@ window.addEventListener('beforeinstallprompt', function(e) {
   showInstallBanner();
 });
 
+// The banner is fixed to the bottom, so the one-question stage has to give up
+// exactly its height — otherwise it covers the 上一题/下一题 buttons.
+function syncBannerHeight(banner) {
+  var h = (banner && banner.style.display !== 'none') ? banner.offsetHeight : 0;
+  document.documentElement.style.setProperty('--banner-h', h + 'px');
+}
+
 function showInstallBanner() {
   if (!deferredPrompt) return;
   var banner = document.getElementById('pwa-install-banner');
-  if (banner) banner.style.display = 'flex';
+  if (banner) { banner.style.display = 'flex'; syncBannerHeight(banner); }
 }
 
 function dismissInstallBanner() {
   var banner = document.getElementById('pwa-install-banner');
-  if (banner) banner.style.display = 'none';
+  if (banner) { banner.style.display = 'none'; syncBannerHeight(banner); }
 }
 
 function triggerPWAInstall() {
