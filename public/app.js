@@ -403,7 +403,7 @@ const App = {
     // photo for a child.
     const headerPhoto = document.getElementById('header-photo');
     if (headerPhoto) {
-      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=34';
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=35';
       headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
@@ -3003,6 +3003,14 @@ const App = {
   // NO machine TTS — student records their own voice, system analyzes volume for auto-scoring
 
   // Start recording a letter — NO machine audio, just microphone
+  // The stage's 下一题 stays disabled until the word has actually been read.
+  _unlockStageNext(mi) {
+    var next = document.getElementById('stage-next-' + mi);
+    if (next) next.disabled = false;
+    var lock = document.getElementById('stage-lock-' + mi);
+    if (lock) lock.remove();
+  },
+
   // ===== Sound-alike matching =====
   // A syllable read correctly still comes back spelled differently: Whisper
   // wrote "No." for /noʊ/ (know), "Full." for ful, "T" for ti, "shine." for
@@ -3220,6 +3228,7 @@ const App = {
     }
     var btn = document.getElementById('letter-read-btn-' + mi);
     if (btn) btn.style.display = 'block';
+    this._unlockStageNext(mi);
 
     // Autoplay is blocked unless the browser has seen a user gesture. Holding
     // to record is one, but the transcription await in between can outlive it
@@ -3472,11 +3481,19 @@ const App = {
     }
     html += '</div>';
 
-    // Foot: manual navigation. Answering auto-advances, but a child who wants
-    // to move on (or back) should not be trapped.
+    // Foot: manual navigation. Going back is always allowed; going forward is
+    // held while a spelling exercise is unfinished — one stray tap here used
+    // to skip the whole word, which is exactly what kept happening.
+    const locked = step.kind === 'vocab';
     html += '<div class="stage-foot">';
     html += '<button class="btn-ghost" onclick="App.prevStep()"' + (this.state.stepIdx === 0 ? ' disabled' : '') + '>上一题</button>';
-    html += '<button class="btn-ghost" onclick="App.nextStep()">' + (this.state.stepIdx === steps.length - 1 ? '完成' : '下一题') + '</button>';
+    if (locked) {
+      html += '<span class="stage-lock" id="stage-lock-' + step.mi + '">读完这个单词才能继续</span>';
+      html += '<button class="btn-ghost" id="stage-next-' + step.mi + '" onclick="App.nextStep()" disabled>'
+           + (this.state.stepIdx === steps.length - 1 ? '完成' : '下一题') + '</button>';
+    } else {
+      html += '<button class="btn-ghost" onclick="App.nextStep()">' + (this.state.stepIdx === steps.length - 1 ? '完成' : '下一题') + '</button>';
+    }
     html += '</div>';
 
     html += '</div>';
@@ -3852,7 +3869,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder"><img src="photo.jpeg?v=34" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=35" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>
