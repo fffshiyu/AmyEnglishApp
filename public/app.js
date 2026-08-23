@@ -403,7 +403,7 @@ const App = {
     // photo for a child.
     const headerPhoto = document.getElementById('header-photo');
     if (headerPhoto) {
-      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=39';
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=41';
       headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
@@ -2583,8 +2583,30 @@ const App = {
   // heard. The old version tested `spoken.includes(target)` per word, which
   // matched "think" against "sink" and "in" against "interesting" — it could
   // not tell a mispronunciation from a correct read.
+  // Digits are spoken as words: a child reading "10-year-old" says "ten year
+  // old", so comparing the written form against the transcript marked a
+  // correctly read sentence wrong.
+  NUM_WORDS: ['zero','one','two','three','four','five','six','seven','eight',
+              'nine','ten','eleven','twelve','thirteen','fourteen','fifteen',
+              'sixteen','seventeen','eighteen','nineteen','twenty'],
+
+  _spellNumber(n) {
+    const v = parseInt(n, 10);
+    if (isNaN(v)) return String(n);
+    if (v <= 20) return this.NUM_WORDS[v];
+    if (v < 100) {
+      const tens = ['','','twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety'];
+      const t = tens[Math.floor(v / 10)], o = v % 10;
+      return o ? t + ' ' + this.NUM_WORDS[o] : t;
+    }
+    return String(v);
+  },
+
   _tokens(s) {
-    return String(s).toLowerCase().replace(/[^a-z0-9'\s]/g, ' ')
+    const self = this;
+    return String(s).toLowerCase()
+      .replace(/(\d+)/g, function(_, d) { return ' ' + self._spellNumber(d) + ' '; })
+      .replace(/[^a-z'\s]/g, ' ')
       .split(/\s+/).filter(Boolean);
   },
 
@@ -3036,6 +3058,107 @@ const App = {
          + word.emoji + '<span class="tap-speak-badge"><svg class="icon icon-sm"><use href="#i-sound"/></svg></span></div>';
   },
 
+  // Punctuation ends a sentence. Abbreviations would trip this up, but the
+  // passages are graded readers — plain sentences, no "Dr." or "e.g.".
+  _splitSentences(text) {
+    return String(text || '')
+      .replace(/\s+/g, ' ')
+      .split(/(?<=[.!?])\s+/)
+      .map(function(x) { return x.trim(); })
+      .filter(function(x) { return x.length > 1; });
+  },
+
+  // ===== Reading: one sentence at a time =====
+  // Tap the sentence to hear it, hold it to read it back. Deliberately no
+  // Chinese here — the child is listening and imitating, not translating.
+  renderSentenceStep(m, mi, si, dayIdx) {
+    const sents = this._splitSentences(m.passage);
+    const sent = sents[si] || '';
+    const esc = sent.replace(/'/g, "\\'");
+    Recorder.warmUp();
+
+    let html = '<div class="sent-step">';
+    html += '<div class="sent-progress">第 ' + (si + 1) + ' / ' + sents.length + ' 句</div>';
+    html += '<div class="sent-text tap-speak-sm" id="sent-' + mi + '-' + si + '"'
+         + ' onclick="App.speak(\'' + esc + '\')" title="点一下听朗读">' + sent + '</div>';
+    html += '<div class="sent-hint">先点句子听一遍，再按住下面的按钮跟读</div>';
+    html += '<button class="word-read-btn hold-target" id="sent-btn-' + mi + '-' + si + '"'
+         + ' onpointerdown="App._readSentence(event,' + mi + ',' + si + ')"'
+         + ' onpointerup="App._holdEnd(event)" onpointercancel="App._holdEnd(event)"'
+         + ' oncontextmenu="return false">按住跟读</button>';
+    html += '<div id="sent-status-' + mi + '-' + si + '"></div>';
+    html += '<div id="sent-result-' + mi + '-' + si + '"></div>';
+    html += '</div>';
+
+    // Play it once on arrival so the child hears the model without hunting
+    // for a button.
+    const self = this;
+    setTimeout(function() { self.speak(sent); }, 250);
+    return html;
+  },
+
+  _readSentence(ev, mi, si) {
+    const self = this;
+    const m = HOMEWORK_DATA[this.state.currentDay].modules[mi];
+    const sent = this._splitSentences(m.passage)[si] || '';
+    const btn = document.getElementById('sent-btn-' + mi + '-' + si);
+    const status = document.getElementById('sent-status-' + mi + '-' + si);
+    if (btn) btn.classList.add('reading');
+
+    this._holdStart(ev, 'sent-' + mi + '-' + si, '这句话', status, function(out, text) {
+      if (btn) btn.classList.remove('reading');
+      if (!out) return;
+      const a = self.alignSpeech(sent, text || '');
+      const slot = document.getElementById('sent-result-' + mi + '-' + si);
+
+      let html = '<div class="spell-summary">';
+      html += '<div class="ss-head"><span class="ss-score">' + (text ? a.score : '—') + '</span>'
+           + '<span class="ss-label">' + (text ? '读对 ' + a.ok + '/' + a.total + ' 个词' : '没听清，再读一次') + '</span></div>';
+      if (text) {
+        html += '<div class="align-sentence">';
+        a.items.forEach(function(x) {
+          if (x.status === 'extra') return;
+          const cls = x.status === 'ok' ? 'w-ok' : x.status === 'wrong' ? 'w-bad' : 'w-miss';
+          html += '<span class="' + cls + '">' + x.target + '</span> ';
+        });
+        html += '</div>';
+      }
+      if (out.samples) {
+        const joined = Recorder.join([out.samples], 0);
+        if (joined) html += '<audio id="sent-audio-' + mi + '-' + si + '" controls src="'
+                         + URL.createObjectURL(joined.blob) + '" style="width:100%;max-width:280px;height:32px"></audio>';
+      }
+      html += '</div>';
+      if (slot) slot.innerHTML = html;
+      if (status) status.innerHTML = '';
+
+      const audio = document.getElementById('sent-audio-' + mi + '-' + si);
+      if (audio) { const p = audio.play(); if (p && p.catch) p.catch(function(){}); }
+
+      Api.submitSpeakingScore({
+        studentId: self._myStudentId(), dayIdx: self.state.currentDay,
+        moduleIdx: mi, itemIdx: si, round: 1, type: 'sentence',
+        label: sent, score: a.score, spoken: text, source: 'asr',
+      });
+      Api.uploadRecording(out.blob, {
+        studentId: self._myStudentId(), dayIdx: self.state.currentDay,
+        moduleIdx: mi, itemIdx: si, round: 1, type: 'sentence',
+        label: sent, score: a.score,
+      }).catch(function(){});
+    });
+  },
+
+  // The whole passage, English only, once every sentence has been read.
+  renderPassageStep(m, mi, dayIdx) {
+    const esc = String(m.passage).replace(/'/g, "\\'");
+    let html = '<div class="passage-full">';
+    html += '<div class="pf-title">全文</div>';
+    html += '<div class="pf-text">' + m.passage + '</div>';
+    html += '<button class="word-read-btn" onclick="App.speak(\'' + esc + '\')">听全文</button>';
+    html += '</div>';
+    return html;
+  },
+
   // ===== Sound-alike matching =====
   // A syllable read correctly still comes back spelled differently: Whisper
   // wrote "No." for /noʊ/ (know), "Full." for ful, "T" for ti, "shine." for
@@ -3484,12 +3607,20 @@ const App = {
     const steps = [];
     if (!day || !day.modules) return steps;
     day.modules.forEach((m, mi) => {
-      if (m.type === 'vocabulary_game')       steps.push({ mi, kind: 'vocab' });
-      else if (m.type === 'writing_template') steps.push({ mi, kind: 'writing' });
-      else if (m.type === 'speaking' && m.questions)
+      if (m.type === 'vocabulary_game')       { steps.push({ mi, kind: 'vocab' }); return; }
+      if (m.type === 'writing_template')      { steps.push({ mi, kind: 'writing' }); return; }
+      if (m.type === 'speaking' && m.questions) {
         m.questions.forEach((q, qi) => steps.push({ mi, qi, kind: 'speaking' }));
-      else if (m.questions)
-        m.questions.forEach((q, qi) => steps.push({ mi, qi, kind: 'question' }));
+        return;
+      }
+      // A passage is read aloud sentence by sentence first — listen, then read
+      // it back — and only after the whole text does the child answer on it.
+      if (m.passage) {
+        this._splitSentences(m.passage).forEach((sent, si) =>
+          steps.push({ mi, si, kind: 'sentence' }));
+        steps.push({ mi, kind: 'passage' });
+      }
+      if (m.questions) m.questions.forEach((q, qi) => steps.push({ mi, qi, kind: 'question' }));
     });
     return steps;
   },
@@ -3560,18 +3691,20 @@ const App = {
     html += '</div>';
 
     html += '<div class="stage-body">';
-    if (!this.state.audioEnabled) {
-      html += '<div class="audio-enable-banner"><div class="ae-title">点击开启语音朗读</div>';
-      html += '<div class="ae-desc">开启后，每道题会自动用纯正美音朗读英语</div>';
-      html += '<button class="ae-btn" onclick="App.enableAudio()">开启语音</button></div>';
-      html += '</div></div>';
-      return html;
-    }
+    // No "开启语音" gate. Browsers unlock audio on the first user gesture and
+    // the child's first action here IS a tap — the banner was a screen to get
+    // past, nothing more.
+    if (!this.state.audioEnabled) this.state.audioEnabled = true;
 
-    if (step.kind === 'question') {
+    if (step.kind === 'sentence') {
+      html += this.renderSentenceStep(m, step.mi, step.si, dayIdx);
+    } else if (step.kind === 'passage') {
+      html += this.renderPassageStep(m, step.mi, dayIdx);
+    } else if (step.kind === 'question') {
+      // English only — the child has already read this passage aloud.
       if (m.passage) {
         html += '<div class="stage-passage"><div class="fs-12 text-sub mb-4">阅读材料</div>'
-             + (m.passage_cn ? '<p>' + m.passage_cn + '</p>' : '') + '<p>' + m.passage + '</p></div>';
+             + '<p>' + m.passage + '</p></div>';
       }
       if (m.audio_text) {
         html += '<div class="mb-8"><button class="btn btn-outline btn-sm" onclick="App.speak(\'' + m.audio_text.replace(/'/g,"\\'") + '\')">听录音</button></div>';
@@ -3975,7 +4108,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder"><img src="photo.jpeg?v=39" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=41" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>
