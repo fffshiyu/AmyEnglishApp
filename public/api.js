@@ -610,7 +610,12 @@ const Api = {
 
   isFillerTranscript(text) {
     if (!text) return true;
-    const t = String(text).toLowerCase().replace(/[^a-z\s.]/g, '').trim();
+    const raw = String(text).trim();
+    // Any CJK content is a real answer — the filler phrases are all English.
+    // Stripping non-Latin first (as this used to) emptied every Chinese
+    // transcript and threw away the child's whole translation.
+    if (/[\u4e00-\u9fa5]/.test(raw)) return false;
+    const t = raw.toLowerCase().replace(/[^a-z\s.]/g, '').trim();
     if (!t || t === '.') return true;
     return this.FILLERS.indexOf(t) >= 0 || this.FILLERS.indexOf(t.replace(/\.$/, '')) >= 0;
   },

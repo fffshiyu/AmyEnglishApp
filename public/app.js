@@ -403,7 +403,7 @@ const App = {
     // photo for a child.
     const headerPhoto = document.getElementById('header-photo');
     if (headerPhoto) {
-      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=41';
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=43';
       headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
@@ -3151,12 +3151,157 @@ const App = {
   // The whole passage, English only, once every sentence has been read.
   renderPassageStep(m, mi, dayIdx) {
     const esc = String(m.passage).replace(/'/g, "\\'");
+    Recorder.warmUp();
     let html = '<div class="passage-full">';
     html += '<div class="pf-title">全文</div>';
     html += '<div class="pf-text">' + m.passage + '</div>';
-    html += '<button class="word-read-btn" onclick="App.speak(\'' + esc + '\')">听全文</button>';
+    html += '<div class="pf-actions">';
+    html += '<button class="btn-ghost" onclick="App.speak(\'' + esc + '\')">听全文</button>';
+    if (m.passage_cn) {
+      html += '<button class="word-read-btn" id="tr-btn-' + mi + '" onclick="App.toggleTranslate(' + mi + ')">开始翻译录音</button>';
+    }
+    html += '</div>';
+    html += '<div id="tr-status-' + mi + '"></div>';
+    html += '<div id="tr-result-' + mi + '"></div>';
     html += '</div>';
     return html;
+  },
+
+  // ===== Translate the passage aloud =====
+  // Tap to start, tap to stop — not press-and-hold. Translating a whole
+  // passage takes a while and holding a button for a minute is not something
+  // to ask of a child.
+  async toggleTranslate(mi) {
+    const btn = document.getElementById('tr-btn-' + mi);
+    const status = document.getElementById('tr-status-' + mi);
+    const m = HOMEWORK_DATA[this.state.currentDay].modules[mi];
+
+    if (this._trRecording) {
+      this._trRecording = false;
+      clearInterval(this._trTimer);
+      if (btn) { btn.textContent = '开始翻译录音'; btn.classList.remove('reading'); }
+      if (status) status.innerHTML = '<div class="tap-rec"><span class="tap-spin"></span>正在识别…</div>';
+
+      let out = null;
+      try { out = await Recorder.stop(); } catch (e) {}
+      if (!out || !out.blob) {
+        if (status) status.innerHTML = '<div class="tap-result bad">没有录到声音，再试一次</div>';
+        return;
+      }
+      const forAsr = (out.samples && Recorder.padForAsr(out.samples)) || out.blob;
+      const res = await Api.transcribe(forAsr, null);
+      const heard = res && res.text && !Api.isFillerTranscript(res.text) ? res.text : '';
+      const r = this.scoreTranslation(m.passage_cn, heard);
+
+      let html = '<div class="spell-summary">';
+      html += '<div class="ss-head"><span class="ss-score">' + (heard ? r.score : '—') + '</span>'
+           + '<span class="ss-label">' + (heard ? '意思覆盖 ' + r.covered + '/' + r.total + ' 字' : '没听清，再试一次') + '</span></div>';
+      if (heard) {
+        html += '<div class="tr-block"><div class="tr-label">你说的</div><div class="tr-text">'
+             + this._toSimplified(heard) + '</div></div>';
+        html += '<div class="tr-block"><div class="tr-label">参考翻译</div><div class="tr-text ref">'
+             + m.passage_cn + '</div></div>';
+        html += '<p class="fs-12 text-sub">翻译没有标准答案，这个分数只看意思覆盖了多少，说法不同不代表错。</p>';
+      }
+      const joined = out.samples ? Recorder.join([out.samples], 0) : null;
+      if (joined) html += '<audio controls src="' + URL.createObjectURL(joined.blob)
+                       + '" style="width:100%;max-width:280px;height:32px"></audio>';
+      html += '</div>';
+      const slot = document.getElementById('tr-result-' + mi);
+      if (slot) slot.innerHTML = html;
+      if (status) status.innerHTML = '';
+
+      Api.submitSpeakingScore({
+        studentId: this._myStudentId(), dayIdx: this.state.currentDay,
+        moduleIdx: mi, itemIdx: 96, round: 1, type: 'translation',
+        label: '整篇翻译', score: r.score, spoken: heard, source: 'asr',
+      });
+      if (joined) {
+        Api.uploadRecording(joined.blob, {
+          studentId: this._myStudentId(), dayIdx: this.state.currentDay,
+          moduleIdx: mi, itemIdx: 96, round: 1, type: 'translation',
+          label: '整篇翻译', score: r.score,
+        }).catch(function(){});
+      }
+      return;
+    }
+
+    if (!Recorder.supported()) {
+      if (status) status.innerHTML = '<div class="tap-result bad">此浏览器不支持录音</div>';
+      return;
+    }
+    this._trRecording = true;
+    if (btn) { btn.textContent = '结束录音'; btn.classList.add('reading'); }
+    let secs = 0;
+    if (status) status.innerHTML = '<div class="tap-rec"><span class="tap-dot"></span>'
+      + '用中文说出这篇文章的意思 <span class="tap-hint" id="tr-time-' + mi + '">0秒</span></div>';
+    clearInterval(this._trTimer);
+    this._trTimer = setInterval(function() {
+      secs++;
+      const t = document.getElementById('tr-time-' + mi);
+      if (t) t.textContent = secs + '秒';
+    }, 1000);
+
+    try { await Recorder.start(); }
+    catch (e) {
+      this._trRecording = false;
+      clearInterval(this._trTimer);
+      if (btn) { btn.textContent = '开始翻译录音'; btn.classList.remove('reading'); }
+      if (status) status.innerHTML = '<div class="tap-result bad">无法访问麦克风，请允许权限</div>';
+    }
+  },
+
+
+  // ===== Chinese translation check =====
+  // Whisper transcribes Mandarin in Traditional characters and ignores any
+  // language hint (@cf/openai/whisper takes only `audio` — a Simplified
+  // prompt was tried and made no difference), so the transcript is folded to
+  // Simplified here before it is compared with the reference translation.
+  //
+  // Coverage is the common everyday set, which is what graded readers use.
+  // A character that is not in the table simply stays as it is.
+  TRAD: '這來個們時們國學會後間對開實發當經動樣進點種說實過還將產業務員來機關與體現們爾種學裡對後隻歡歡喜聽讀書愛媽爸媽學運動風雲電話語問題長長門馬鳥魚鳥飛車東頭興爾龍龜歲兒兒歲數樓錢銀鐵鋼銅顏線紙筆畫圖書園場農漁牧獵豬雞鴨鵝馬羊狗貓蟲蝦蟹龍鳳凰麗華貴賤買賣價貨財貧富續斷續轉輪車軍陣戰爭勝負將帥兵刀劍槍砲彈藥醫藥療養護衛檢驗診斷術學習慣練習題號碼碼頭條約結約續紹紅綠藍紫綢緞織繡縫繩結網絡線續維綜統緊繼績纖鮮鹽醬醋糖麵飯餅餃麥穀糧倉庫儲藏積蓄豐盈虧損盡歸還償贈賞罰責備懲獎勵勸諫諮詢議論談話語言詞語謠謎謝誠謹謙讓認識記憶讀誦講課試驗證據調查訪問訊詢誤誤譯譯詩詞誌誌湯姆麼沒總聲藝豐辦壓陽陰際隨險難靜華萬與專屬層屆屬島嶺峽帶幫幾廣廳應廠處備複雜',
+  SIMP: '这来个们时们国学会后间对开实发当经动样进点种说实过还将产业务员来机关与体现们尔种学里对后只欢欢喜听读书爱妈爸妈学运动风云电话语问题长长门马鸟鱼鸟飞车东头兴尔龙龟岁儿儿岁数楼钱银铁钢铜颜线纸笔画图书园场农渔牧猎猪鸡鸭鹅马羊狗猫虫虾蟹龙凤凰丽华贵贱买卖价货财贫富续断续转轮车军阵战争胜负将帅兵刀剑枪炮弹药医药疗养护卫检验诊断术学习惯练习题号码码头条约结约续绍红绿蓝紫绸缎织绣缝绳结网络线续维综统紧继绩纤鲜盐酱醋糖面饭饼饺麦谷粮仓库储藏积蓄丰盈亏损尽归还偿赠赏罚责备惩奖励劝谏咨询议论谈话语言词语谣谜谢诚谨谦让认识记忆读诵讲课试验证据调查访问讯询误误译译诗词志志汤姆么没总声艺丰办压阳阴际随险难静华万与专属层届属岛岭峡带帮几广厅应厂处备复杂',
+
+  _toSimplified(text) {
+    if (!this._tsMap) {
+      this._tsMap = {};
+      for (var i = 0; i < this.TRAD.length && i < this.SIMP.length; i++) {
+        if (this.TRAD[i] !== this.SIMP[i]) this._tsMap[this.TRAD[i]] = this.SIMP[i];
+      }
+    }
+    var map = this._tsMap, out = '';
+    for (var j = 0; j < text.length; j++) out += map[text[j]] || text[j];
+    return out;
+  },
+
+  _zhChars(text) {
+    return this._toSimplified(String(text || ''))
+      .replace(/[^\u4e00-\u9fa5]/g, '')     // keep Han characters only
+      .split('');
+  },
+
+  // Longest common subsequence over characters. Translation is free-form —
+  // two correct translations of the same sentence share content words but not
+  // word order or particles — so this measures overlap, not exactness. It is
+  // a "did you get the meaning across" indicator, not a translation grade.
+  scoreTranslation(reference, spoken) {
+    var a = this._zhChars(reference), b = this._zhChars(spoken);
+    if (!a.length) return { score: 0, covered: 0, total: 0, spoken: spoken };
+    if (!b.length) return { score: 0, covered: 0, total: a.length, spoken: spoken };
+    var prev = new Array(b.length + 1).fill(0);
+    for (var i = 1; i <= a.length; i++) {
+      var cur = [0];
+      for (var j = 1; j <= b.length; j++) {
+        cur[j] = a[i - 1] === b[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], cur[j - 1]);
+      }
+      prev = cur;
+    }
+    var lcs = prev[b.length];
+    return {
+      score: Math.round(lcs / a.length * 100),
+      covered: lcs, total: a.length, spoken: spoken,
+    };
   },
 
   // ===== Sound-alike matching =====
@@ -4108,7 +4253,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder"><img src="photo.jpeg?v=41" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=43" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>

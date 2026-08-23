@@ -61,6 +61,9 @@ async function transcribe(request, env) {
     ? '@cf/openai/whisper-large-v3-turbo' : MODEL;
 
   const input = { audio: [...bytes] };
+  // NOTE: @cf/openai/whisper accepts only `audio` — language and
+  // initial_prompt are ignored (tested: a Simplified-Chinese prompt still
+  // returned Traditional). Chinese is normalised on the client instead.
   if (model !== MODEL) {
     input.task = 'transcribe';
     input.language = 'en';
