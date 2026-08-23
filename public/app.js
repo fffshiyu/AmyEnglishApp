@@ -403,7 +403,7 @@ const App = {
     // photo for a child.
     const headerPhoto = document.getElementById('header-photo');
     if (headerPhoto) {
-      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=30';
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=31';
       headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
@@ -3000,20 +3000,58 @@ const App = {
   // NO machine TTS — student records their own voice, system analyzes volume for auto-scoring
 
   // Start recording a letter — NO machine audio, just microphone
+  // ===== Sound-alike matching =====
+  // A syllable read correctly still comes back spelled differently: Whisper
+  // wrote "No." for /noʊ/ (know), "Full." for ful, "T" for ti, "shine." for
+  // chine. Comparing letters would fail a child who read it perfectly, so both
+  // sides are reduced to a rough sound key first.
+  _soundKey(w) {
+    var x = String(w).toLowerCase().replace(/[^a-z]/g, '');
+    if (!x) return '';
+    x = x.replace(/^kn/, 'n').replace(/^wr/, 'r').replace(/^gn/, 'n')
+         .replace(/^ps/, 's').replace(/^x/, 'z')
+         .replace(/dge/g, 'j').replace(/tch/g, 'ch')
+         .replace(/ph/g, 'f').replace(/ck/g, 'k').replace(/qu/g, 'kw')
+         .replace(/ch/g, 'sh')                 // chine -> shine
+         .replace(/gh/g, '')                   // silent
+         .replace(/([a-z])\1+/g, '$1')          // full -> ful
+         .replace(/e$/, '')                    // silent final e
+         .replace(/([aeiou])w$/, '$1')         // know -> kno -> no
+         .replace(/([aeiou])\1/g, '$1');
+    return x;
+  },
+
+  // Lenient on purpose: one edit apart still counts. Being strict here means
+  // telling a child they read it wrong when the recogniser simply spelled it
+  // another way.
+  _soundAlike(expected, heard) {
+    if (!heard) return false;
+    var a = this._soundKey(expected);
+    if (!a) return false;
+    var toks = String(heard).toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
+    var self = this;
+    return toks.some(function(t) {
+      var b = self._soundKey(t);
+      if (!b) return false;
+      if (a === b) return true;
+      if (a.length >= 3 && (a.indexOf(b) === 0 || b.indexOf(a) === 0)) return true;
+      return self._editDistance(a, b) <= 1;
+    });
+  },
+
   // ===== Spell-then-say =====
   // One implementation for every spelling exercise (letters, syllables, and
   // anything added later): hold each piece to read it, hold the whole word,
   // then hear the takes stitched together.
   //
-  // Only the WHOLE WORD is recognised and scored. Individual letters are not:
-  // measured against real Whisper, isolated letters came back as "Capitoli"
-  // for E and "www." for W — 6 of 9 on "knowledge". Scoring them would fail
-  // children who read correctly, so the pieces are practice, not a test.
-  // Skipping recognition on them also means one upload per word, not ten.
+  // Syllables ARE scored; letters are not. A syllable is a pronounceable
+  // chunk the recogniser handles well (know, ledge, ful all came back right,
+  // via _soundAlike). An isolated letter is not: E came back as "Capitoli"
+  // and W as "www." — scoring those would fail a child who read correctly.
   _renderSpellRead(m, mi, dayIdx, word, units, kind) {
     var self = this;
     this._spell = { mi: mi, kind: kind, word: word.word, total: units.length,
-                    takes: {}, wordTake: null, score: null };
+                    takes: {}, unitScores: {}, wordTake: null, score: null };
 
     var html = '<div class="vocab-step-label">' + (kind === 'letter' ? '字母跟读' : '音节拼合') + '</div>';
     html += '<div class="vocab-emoji-card" style="width:100px;height:100px;font-size:52px">' + word.emoji + '</div>';
@@ -3052,15 +3090,34 @@ const App = {
     if (!el) return;
     var label = el.textContent.trim();
     var status = document.getElementById('spell-status-' + mi);
+    var scored = this._spell.kind === 'syllable';
     el.classList.add('reading');
-    this._holdStart(ev, 'unit-' + mi + '-' + idx, label, status, function(out) {
+    this._holdStart(ev, 'unit-' + mi + '-' + idx, label, status, function(out, text) {
       el.classList.remove('reading');
       if (!out) return;
       el.classList.add('read-done');
       if (out.samples) self._spell.takes[idx] = out.samples;   // kept for the joined playback
-      if (status) status.innerHTML = '<div class="tap-result good">已录「' + label + '」</div>';
+
+      if (!scored) {
+        if (status) status.innerHTML = '<div class="tap-result good">已录「' + label + '」</div>';
+      } else {
+        var ok = self._soundAlike(label, text);
+        self._spell.unitScores[idx] = { label: label, ok: ok, heard: text };
+        el.classList.toggle('read-miss', !ok);
+        if (status) {
+          status.innerHTML = '<div class="tap-result ' + (ok ? 'good' : 'bad') + '">'
+            + (ok ? '读对了：' + label : '再读一次「' + label + '」')
+            + (text ? '<span class="tap-heard">识别：' + text + '</span>'
+                    : '<span class="tap-heard">没识别出内容</span>') + '</div>';
+        }
+        Api.submitSpeakingScore({
+          studentId: self._myStudentId(), dayIdx: self.state.currentDay,
+          moduleIdx: mi, itemIdx: idx, round: 1, type: 'syllable',
+          label: label, score: ok ? 100 : 0, spoken: text, source: 'asr',
+        });
+      }
       self._spellProgress(mi);
-    }, false);
+    }, scored);
   },
 
   async _readFullWord(ev, mi) {
@@ -3123,6 +3180,19 @@ const App = {
     html += '<div class="lc-label">' + sp.word + '</div>';
     html += '<div class="lc-score">' + (sp.score === null ? '-' : sp.score) + '</div>';
     html += '<div class="fs-12 text-sub">整词得分</div>';
+    if (sp.kind === 'syllable') {
+      var okN = 0, rows = '';
+      for (var k = 0; k < sp.total; k++) {
+        var u = sp.unitScores[k];
+        if (u && u.ok) okN++;
+        rows += '<div class="letter-detail-row"><span class="ldr-letter">'
+             + (u ? u.label : '-') + '</span><span class="ldr-score" style="color:'
+             + (u && u.ok ? 'var(--ink)' : '#D6321F') + '">'
+             + (u ? (u.ok ? '读对' : '再练练') : '未读') + '</span></div>';
+      }
+      html += '<div class="fs-12 text-sub">音节读对 ' + okN + '/' + sp.total + '</div>';
+      html += '<div style="margin:12px 0;text-align:left">' + rows + '</div>';
+    }
     if (joined) {
       html += '<div class="mt-8"><div class="fs-12 text-sub mb-4">你的朗读（逐个 + 整词）</div>'
            + '<audio id="spell-audio-' + mi + '" controls src="' + URL.createObjectURL(joined.blob)
@@ -3770,7 +3840,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder"><img src="photo.jpeg?v=30" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=31" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>
