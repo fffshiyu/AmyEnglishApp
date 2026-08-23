@@ -92,6 +92,14 @@ input,textarea,select{font-family:inherit;font-size:14px;outline:none}
 .icon-xl{width:44px;height:44px}
 .icon-sm{width:16px;height:16px;display:inline-block;vertical-align:-3px}
 
+/* 语音识别对比：逐词标记 */
+.align-sentence{font-size:19px;line-height:1.9;margin:4px 0 8px;word-spacing:2px}
+.w-ok{color:var(--ink)}
+.w-bad{color:#D6321F;text-decoration:underline wavy #D6321F;text-underline-offset:4px;cursor:help}
+.w-miss{color:var(--ink-3);text-decoration:line-through}
+.align-key{display:flex;gap:14px;justify-content:center;margin-bottom:4px}
+.align-key span{font-size:11px}
+
 /* ===== 一屏一题：页面不滚动，只有阅读材料在自己的框内滚 ===== */
 body.stage-mode,html:has(body.stage-mode){overflow:hidden;overscroll-behavior:none}
 /* 舞台自己撑满剩余高度，容器不再另加上下留白 */

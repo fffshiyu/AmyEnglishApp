@@ -1751,8 +1751,14 @@ const App = {
         html += '<tr><td>' + nameOf(r.studentId) + '</td>';
         html += '<td>' + (r.label || '-') + '</td>';
         html += '<td>' + (r.round || 1) + '</td>';
-        html += '<td>' + score + '</td>';
-        html += '<td class="fs-12 text-sub">' + src + '</td>';
+        html += '<td>' + score + (r.wordTotal ? ' <span class="fs-12 text-sub">(' + r.okCount + '/' + r.wordTotal + '词)</span>' : '') + '</td>';
+        html += '<td class="fs-12 text-sub">' + src
+             + (r.spoken ? '<br><span style="color:var(--ink-3)">识别：' + r.spoken + '</span>' : '')
+             + ((r.wrongWords && r.wrongWords.length)
+                 ? '<br><span style="color:#D6321F">读错：' + r.wrongWords.map(w=>w.expected+'→'+w.heard).join('、') + '</span>' : '')
+             + ((r.missedWords && r.missedWords.length)
+                 ? '<br><span style="color:var(--ink-3)">漏读：' + r.missedWords.join('、') + '</span>' : '')
+             + '</td>';
         html += '<td class="fs-12">' + (r.at ? r.at.slice(11, 16) : '-') + '</td>';
         html += '<td>' + (r.audioUrl
           ? '<audio controls preload="none" src="' + r.audioUrl + '" style="height:30px;max-width:200px"></audio>'
@@ -2259,6 +2265,15 @@ const App = {
 
     // Capture the audio for real, in parallel with speech recognition.
     this._startClipCapture();
+    this._asrDelivered = false;
+    this._asrTranscript = null;
+    this._readFinished = false;      // latch, reset per attempt
+    // Count attempts per question so 重新跟读 shows as round 2, 3, … for the
+    // teacher instead of every record claiming to be the first try.
+    this._spRounds = this._spRounds || {};
+    const rkey = dayIdx + '-' + mi + '-' + qi;
+    this._spRounds[rkey] = (this._spRounds[rkey] || 0) + 1;
+    this._spRound = this._spRounds[rkey];
 
     // Show recording UI immediately with animation
     readArea.innerHTML = '<div class="speak-record show" style="text-align:center">' +
@@ -2266,8 +2281,9 @@ const App = {
       '<p style="font-size:16px;font-weight:600;color:var(--primary);margin:12px 0 4px">正在录音...</p>' +
       '<p class="fs-12 text-sub">请大声朗读下面的句子</p>' +
       '<div class="speak-sentence" style="font-size:18px;margin:12px 0;color:var(--text)">' + q.sentence + '</div>' +
-      '<div class="rec-timer" id="rec-timer-' + mi + '">⏱️ 0秒</div>' +
-      '<button class="speak-btn" style="background:var(--danger);margin-top:12px" onclick="App._stopReading(' + mi + ',' + qi + ',\'' + dayIdx + '\')">⏹️ 结束朗读</button>' +
+      '<div class="rec-timer" id="rec-timer-' + mi + '">0秒</div>' +
+      '<div class="fs-12 text-sub" id="asr-hint-' + mi + '" style="min-height:18px;margin-top:6px"></div>' +
+      '<button class="speak-btn" style="background:var(--danger);margin-top:12px" onclick="App._stopReading(' + mi + ',' + qi + ',\'' + dayIdx + '\')">结束朗读</button>' +
       '</div>';
 
     // Start timer
@@ -2275,12 +2291,16 @@ const App = {
     var timerInterval = setInterval(function() {
       recSeconds++;
       var timerEl = document.getElementById('rec-timer-' + mi);
-      if (timerEl) timerEl.textContent = '⏱️ ' + recSeconds + '秒';
+      if (timerEl) timerEl.textContent = recSeconds + '秒';
       else clearInterval(timerInterval);
     }, 1000);
     self._recTimerInterval = timerInterval;
 
-    // Try speech recognition
+    // Recognition is best-effort on top of the recording. It must never end
+    // the exercise: Chrome's recogniser talks to Google servers and fails
+    // within a second where that is unreachable — which used to terminate the
+    // read-along before the child had said anything.
+    self._asrFailed = null;
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SR) {
       try {
@@ -2291,63 +2311,105 @@ const App = {
         rec.maxAlternatives = 1;
 
         rec.onresult = (e) => {
-          clearInterval(self._recTimerInterval);
-          const spoken = e.results[0][0].transcript.toLowerCase();
-          const score = self.calcPronScore(q.sentence.toLowerCase(), spoken);
-          const wrongWords = self.findWrongWords(q.sentence.toLowerCase(), spoken);
-          self._showReadResult(mi, qi, dayIdx, q, score, spoken, wrongWords);
+          self._asrDelivered = true;
+          self._asrTranscript = e.results[0][0].transcript.toLowerCase();
+          self._finishRead(mi, qi, dayIdx);        // heard a full utterance
         };
 
         rec.onerror = (e) => {
-          clearInterval(self._recTimerInterval);
-          // Speech recognition started but errored - use self-assessment
-          self._showSelfAssessment(mi, qi, dayIdx, q);
+          // Keep recording. Just note it, so the child sees why there will be
+          // no automatic word-by-word comparison this time.
+          self._asrFailed = (e && e.error === 'no-speech') ? '没有听到声音'
+                          : (e && e.error === 'not-allowed') ? '麦克风未授权'
+                          : '语音识别不可用';
+          const hint = document.getElementById('asr-hint-' + mi);
+          if (hint) hint.textContent = self._asrFailed + '，读完点「结束朗读」自评';
         };
 
-        rec.onend = () => {
-          clearInterval(self._recTimerInterval);
-        };
+        rec.onend = () => {};
 
         rec.start();
         self._currentRec = rec;
       } catch(e) {
-        clearInterval(self._recTimerInterval);
-        self._showSelfAssessment(mi, qi, dayIdx, q);
+        self._asrFailed = '语音识别不可用';
       }
     } else {
-      // No speech recognition available - use self-assessment after a short delay
-      // Let the child practice reading for a few seconds
-      setTimeout(function() {
-        clearInterval(self._recTimerInterval);
-        self._finishClipCapture();
-        self._showSelfAssessment(mi, qi, dayIdx, q);
-      }, 3000);
+      self._asrFailed = '此浏览器不支持语音识别';
+      const hint = document.getElementById('asr-hint-' + mi);
+      if (hint) hint.textContent = self._asrFailed + '，读完点「结束朗读」自评';
+    }
+
+    // Hard cap so a forgotten session cannot record forever.
+    clearTimeout(self._readCapTimer);
+    self._readCapTimer = setTimeout(function() {
+      self._finishRead(mi, qi, dayIdx);
+    }, 20000);
+  },
+
+  // The single place a read-along ends: child taps 结束朗读, recognition
+  // returns, or the 20s cap fires. Whichever happens first wins.
+  _finishRead(mi, qi, dayIdx) {
+    if (this._readFinished) return;
+    this._readFinished = true;
+    clearTimeout(this._readCapTimer);
+    if (this._recTimerInterval) { clearInterval(this._recTimerInterval); this._recTimerInterval = null; }
+    if (this._currentRec) { try { this._currentRec.stop(); } catch(e) {} this._currentRec = null; }
+    this._finishClipCapture();          // release the mic; blob is buffered
+
+    const m = HOMEWORK_DATA[dayIdx].modules[mi];
+    const q = m.questions[qi];
+
+    if (this._asrDelivered && this._asrTranscript) {
+      const spoken = this._asrTranscript;
+      this._showReadResult(mi, qi, dayIdx, q,
+        this.calcPronScore(q.sentence.toLowerCase(), spoken), spoken,
+        this.findWrongWords(q.sentence.toLowerCase(), spoken));
+    } else {
+      this._showSelfAssessment(mi, qi, dayIdx, q, this._asrFailed || '没有识别到内容');
     }
   },
 
   // Stop reading manually (when child clicks "结束朗读")
   _stopReading(mi, qi, dayIdx) {
-    if (this._recTimerInterval) { clearInterval(this._recTimerInterval); this._recTimerInterval = null; }
-    this._finishClipCapture();   // release the mic now; blob is buffered
-    if (this._currentRec) {
-      try { this._currentRec.stop(); } catch(e) {}
-      this._currentRec = null;
-    }
-    const m = HOMEWORK_DATA[dayIdx].modules[mi];
-    const q = m.questions[qi];
-    // If speech recognition didn't produce a result, use self-assessment
-    this._showSelfAssessment(mi, qi, dayIdx, q);
+    // Give a recognition result that is already in flight a moment to land,
+    // otherwise self-assessment would replace a comparison we are about to get.
+    var self = this;
+    if (self._asrDelivered) { self._finishRead(mi, qi, dayIdx); return; }
+    if (self._currentRec) { try { self._currentRec.stop(); } catch(e) {} }
+    setTimeout(function() { self._finishRead(mi, qi, dayIdx); }, 900);
   },
 
   // Show speech recognition result
   _showReadResult(mi, qi, dayIdx, q, score, spoken, wrongWords) {
     const m = HOMEWORK_DATA[dayIdx].modules[mi];
     const readArea = document.getElementById('sp-read-' + mi);
+    const a = this.alignSpeech(q.sentence, spoken);
     var html = '<div class="speak-record show" style="text-align:center">';
     html += '<div class="speak-score" style="color:' + (score>=70?'var(--success)':'var(--danger)') + '">' + score + '分</div>';
-    html += '<div class="fs-12 text-sub" style="margin:4px 0 8px">你说：' + spoken + '</div>';
-    if (wrongWords.length > 0) {
-      html += '<div class="speak-words">⚠️ 需要练习的单词：' + wrongWords.join(', ') + '</div>';
+    html += '<div class="fs-12 text-sub mb-8">读对 ' + a.ok + ' / ' + a.total + ' 个词</div>';
+
+    // The sentence, word by word, marked with what happened to each.
+    html += '<div class="align-sentence">';
+    a.items.forEach(x => {
+      if (x.status === 'extra') return;                    // shown separately
+      const cls = x.status === 'ok' ? 'w-ok' : x.status === 'wrong' ? 'w-bad' : 'w-miss';
+      const tip = x.status === 'wrong' ? ' title="听到的是：' + x.spoken + '"' : '';
+      html += '<span class="' + cls + '"' + tip + '>' + x.target + '</span> ';
+    });
+    html += '</div>';
+    html += '<div class="align-key fs-12 text-sub">'
+         + '<span class="w-ok">正确</span>'
+         + '<span class="w-bad">读错</span>'
+         + '<span class="w-miss">漏读</span></div>';
+
+    html += '<div class="fs-12 text-sub mt-8">识别到：' + (spoken || '（没听清）') + '</div>';
+    if (a.extra.length) {
+      html += '<div class="fs-12 text-sub">多读了：' + a.extra.map(x=>x.spoken).join(' ') + '</div>';
+    }
+    const practise = a.wrong.map(x => x.target + '（读成了 ' + x.spoken + '）')
+                      .concat(a.missing.map(x => x.target + '（漏读）'));
+    if (practise.length > 0) {
+      html += '<div class="speak-words">需要练习：' + practise.join('、') + '</div>';
     }
     if (score >= 70) {
       html += '<div class="badge badge-success mt-8" style="font-size:14px">✅ 太棒了！通过！</div>';
@@ -2367,17 +2429,24 @@ const App = {
     html += '<div id="sp-clip-' + mi + '" class="mt-8"></div>';
     html += '</div>';
     readArea.innerHTML = html;
-    this._persistSpeakingClip(mi, qi, dayIdx, q, score, { spoken: spoken, source: 'asr' });
+    this._persistSpeakingClip(mi, qi, dayIdx, q, score, {
+      spoken: spoken, source: 'asr',
+      okCount: a.ok, wordTotal: a.total,
+      wrongWords: a.wrong.map(x => ({ expected: x.target, heard: x.spoken })),
+      missedWords: a.missing.map(x => x.target),
+    });
   },
 
   // Self-assessment mode (when speech recognition is not available)
-  _showSelfAssessment(mi, qi, dayIdx, q) {
+  _showSelfAssessment(mi, qi, dayIdx, q, reason) {
     const m = HOMEWORK_DATA[dayIdx].modules[mi];
     const readArea = document.getElementById('sp-read-' + mi);
     var self = this;
     var html = '<div class="speak-record show" style="text-align:center">';
-    html += '<p style="font-size:15px;font-weight:600;color:var(--primary);margin-bottom:8px">🎤 请给自己打分</p>';
-    html += '<p class="fs-12 text-sub mb-8">听一听标准发音，对比自己的朗读</p>';
+    html += '<p style="font-size:15px;font-weight:600;color:var(--primary);margin-bottom:8px">请给自己打分</p>';
+    // Be explicit about why the automatic comparison is not shown.
+    html += '<p class="fs-12 text-sub mb-8">' + (reason ? reason + '，改为自评。' : '')
+         + '听一听标准发音，对比自己的朗读</p>';
     html += '<button class="speak-btn play" style="margin-bottom:12px" onclick="App.speak(\'' + q.sentence.replace(/'/g,"\\'") + '\')">🔊 听标准发音</button>';
     html += '<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">';
     html += '<button class="speak-btn" style="background:var(--success)" onclick="App._selfScore(' + mi + ',' + qi + ',\'' + dayIdx + '\',90)">⭐ 很好 (90分)</button>';
@@ -2429,32 +2498,46 @@ const App = {
   // The read-along UI used to say "正在录音…" while capturing nothing — it
   // only ran speech recognition. Now the audio is actually kept, so the
   // teacher can listen and judge pronunciation themselves.
-  async _startClipCapture() {
+  _startClipCapture() {
     this._spClip = null;
-    if (!navigator.mediaDevices || !window.MediaRecorder) return false;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const rec = new MediaRecorder(stream);
-      const chunks = [];
-      rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
-      rec.start();
-      this._spClip = { rec, chunks, stream };
-      return true;
-    } catch (e) {
-      // Denied or unavailable: the read-along still works, just without audio.
-      console.warn('Clip capture unavailable:', e);
-      return false;
+    this._spClipBlob = null;
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+      this._spClipStarting = null;
+      return Promise.resolve(false);
     }
+    // Held so that a finish() arriving before getUserMedia resolves still waits
+    // for the recorder — otherwise the clip is lost AND the mic stays open.
+    this._spClipStarting = navigator.mediaDevices.getUserMedia({ audio: true })
+      .then(stream => {
+        const rec = new MediaRecorder(stream);
+        const chunks = [];
+        rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+        rec.start();
+        this._spClip = { rec, chunks, stream };
+        return true;
+      })
+      .catch(e => {
+        // Denied or unavailable: the read-along still works, just without audio.
+        console.warn('Clip capture unavailable:', e);
+        return false;
+      });
+    return this._spClipStarting;
   },
 
   // Idempotent: called as soon as the child stops reading (so the mic is
   // released and we don't record the silence while they self-score), and
   // again when the result is persisted. The blob is buffered in between.
-  _finishClipCapture() {
+  async _finishClipCapture() {
     if (this._spClipPending) return this._spClipPending;
+    // Wait for a capture that is still starting up, so a fast recognition
+    // result cannot leave the microphone running.
+    if (this._spClipStarting) {
+      try { await this._spClipStarting; } catch (e) {}
+      this._spClipStarting = null;
+    }
     const c = this._spClip;
     this._spClip = null;
-    if (!c) return Promise.resolve(this._spClipBlob || null);
+    if (!c) return this._spClipBlob || null;
     this._spClipPending = new Promise(resolve => {
       const done = () => {
         try { c.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
@@ -2475,7 +2558,7 @@ const App = {
     this._spClipBlob = null;              // consumed; next attempt starts clean
     const meta = Object.assign({
       studentId: this._myStudentId(),
-      dayIdx: dayIdx, moduleIdx: mi, itemIdx: qi, round: 1,
+      dayIdx: dayIdx, moduleIdx: mi, itemIdx: qi, round: this._spRound || 1,
       type: 'speaking', label: q.sentence, score: score,
     }, extra || {});
 
@@ -2498,18 +2581,90 @@ const App = {
     }
   },
 
+  // ===== Speech-recognition comparison =====
+  // Word-level alignment between the target sentence and what the recogniser
+  // heard. The old version tested `spoken.includes(target)` per word, which
+  // matched "think" against "sink" and "in" against "interesting" — it could
+  // not tell a mispronunciation from a correct read.
+  _tokens(s) {
+    return String(s).toLowerCase().replace(/[^a-z0-9'\s]/g, ' ')
+      .split(/\s+/).filter(Boolean);
+  },
+
+  _editDistance(a, b) {
+    const n = a.length, m = b.length;
+    if (!n) return m;
+    if (!m) return n;
+    let prev = Array.from({ length: m + 1 }, (_, j) => j);
+    for (let i = 1; i <= n; i++) {
+      const cur = [i];
+      for (let j = 1; j <= m; j++) {
+        cur[j] = Math.min(
+          prev[j] + 1,
+          cur[j - 1] + 1,
+          prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+        );
+      }
+      prev = cur;
+    }
+    return prev[m];
+  },
+
+  // Levenshtein over word arrays, with backtrace, so each target word gets a
+  // verdict: ok / wrong (something else was said there) / missing (skipped),
+  // plus any extra words that were not in the sentence.
+  alignSpeech(target, spoken) {
+    const t = this._tokens(target), s = this._tokens(spoken);
+    const n = t.length, m = s.length;
+    const d = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+    const bt = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(''));
+    for (let i = 1; i <= n; i++) { d[i][0] = i; bt[i][0] = 'del'; }
+    for (let j = 1; j <= m; j++) { d[0][j] = j; bt[0][j] = 'ins'; }
+    for (let i = 1; i <= n; i++) {
+      for (let j = 1; j <= m; j++) {
+        const same = t[i - 1] === s[j - 1];
+        const sub = d[i - 1][j - 1] + (same ? 0 : 1);
+        const del = d[i - 1][j] + 1;
+        const ins = d[i][j - 1] + 1;
+        const best = Math.min(sub, del, ins);
+        d[i][j] = best;
+        bt[i][j] = best === sub ? (same ? 'match' : 'sub') : (best === del ? 'del' : 'ins');
+      }
+    }
+    const out = [];
+    let i = n, j = m;
+    while (i > 0 || j > 0) {
+      const op = i === 0 ? 'ins' : j === 0 ? 'del' : bt[i][j];
+      if (op === 'match' || op === 'sub') {
+        out.push({ target: t[i - 1], spoken: s[j - 1], status: op === 'match' ? 'ok' : 'wrong' });
+        i--; j--;
+      } else if (op === 'del') {
+        out.push({ target: t[i - 1], spoken: null, status: 'missing' }); i--;
+      } else {
+        out.push({ target: null, spoken: s[j - 1], status: 'extra' }); j--;
+      }
+    }
+    out.reverse();
+    const total = n || 1;
+    const ok = out.filter(x => x.status === 'ok').length;
+    return {
+      items: out,
+      total: n,
+      ok: ok,
+      score: Math.round(ok / total * 100),
+      wrong: out.filter(x => x.status === 'wrong'),
+      missing: out.filter(x => x.status === 'missing'),
+      extra: out.filter(x => x.status === 'extra'),
+    };
+  },
+
   calcPronScore(target, spoken) {
-    const tWords = target.replace(/[^a-z\s]/g,'').split(/\s+/);
-    const sWords = spoken.replace(/[^a-z\s]/g,'').split(/\s+/);
-    let correct = 0;
-    tWords.forEach(w => { if (sWords.some(sw => sw.includes(w) || w.includes(sw))) correct++; });
-    return Math.min(100, Math.round(correct / tWords.length * 100));
+    return this.alignSpeech(target, spoken).score;
   },
 
   findWrongWords(target, spoken) {
-    const tWords = target.replace(/[^a-z\s]/g,'').split(/\s+/).filter(w=>w.length>2);
-    const sWords = spoken.replace(/[^a-z\s]/g,'').split(/\s+/);
-    return tWords.filter(w => !sWords.some(sw => sw.includes(w) || w.includes(sw)));
+    const a = this.alignSpeech(target, spoken);
+    return a.wrong.concat(a.missing).map(x => x.target).filter(w => w && w.length > 1);
   },
 
   // Old speak() removed - now using new TTS system above
