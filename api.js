@@ -588,7 +588,15 @@ const Api = {
   // Recognition is an enhancement, never a dependency. Every caller must work
   // when this returns null: the clip is already saved locally by then, and the
   // teacher can listen regardless.
-  TRANSCRIBE_URL: '/api/transcribe',
+  // Same-origin when the app is served from amyeng.top — no CORS preflight,
+  // which is one less round trip on a flaky connection. Anywhere else
+  // (local dev, another host) falls back to the api. subdomain.
+  API_HOST: 'https://api.amyeng.top',
+  get TRANSCRIBE_URL() {
+    const h = (typeof location !== 'undefined' && location.hostname) || '';
+    const sameZone = h === 'amyeng.top' || h.endsWith('.amyeng.top');
+    return (sameZone ? '' : this.API_HOST) + '/api/transcribe';
+  },
   TRANSCRIBE_TIMEOUT: 12000,
 
   async transcribe(blob, meta) {

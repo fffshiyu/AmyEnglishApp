@@ -8,10 +8,23 @@
   // real model and draws from the daily neuron allowance.
   "ai": { "binding": "AI" },
 
+  // Same-origin routes are the primary path: the page and /api/* share
+  // amyeng.top, so there is no CORS preflight — one less round trip on a
+  // flaky mainland connection. The api. subdomain is the fallback for when
+  // the page is served from somewhere other than this zone.
+  //
+  // NOTE: *.workers.dev is DNS-poisoned in the mainland. It stays available
+  // for your own testing, but never point the app at it.
+  "routes": [
+    { "pattern": "amyeng.top/api/*", "zone_name": "amyeng.top" },
+    { "pattern": "www.amyeng.top/api/*", "zone_name": "amyeng.top" },
+    { "pattern": "api.amyeng.top", "custom_domain": true }
+  ],
+
   "vars": {
-    // Tighten to the real domain once it is on Cloudflare. "*" only matters
-    // for local dev, where the page is served from localhost:8765.
-    "ALLOWED_ORIGIN": "*"
+    // Only consulted on the api. subdomain; same-origin requests never
+    // preflight. Keep in sync with the domains the app is served from.
+    "ALLOWED_ORIGIN": "https://amyeng.top"
   },
 
   "observability": {
