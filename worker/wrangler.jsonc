@@ -30,9 +30,16 @@
   //
   // NOTE: *.workers.dev is DNS-poisoned in the mainland. It stays available
   // for your own testing, but never point the app at it.
+  // Whole hostname, not just /api/*. This Worker IS the site: it serves
+  // public/ and answers /api/*.
+  //
+  // Scoping it to /api/* was tried and was wrong twice over — the app never
+  // got served, and an older deployment kept answering everything else,
+  // including a publicly readable .git/ directory. Claiming /* puts one known
+  // set of files in front of the domain and 404s everything else.
   "routes": [
-    { "pattern": "amyeng.top/api/*", "zone_name": "amyeng.top" },
-    { "pattern": "www.amyeng.top/api/*", "zone_name": "amyeng.top" },
+    { "pattern": "amyeng.top/*", "zone_name": "amyeng.top" },
+    { "pattern": "www.amyeng.top/*", "zone_name": "amyeng.top" },
     { "pattern": "api.amyeng.top", "custom_domain": true }
   ],
 
