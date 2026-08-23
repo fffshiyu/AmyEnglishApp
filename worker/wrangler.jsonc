@@ -8,6 +8,21 @@
   // real model and draws from the daily neuron allowance.
   "ai": { "binding": "AI" },
 
+  // The PWA ships from this same Worker, so page and API are one deploy on
+  // one origin.
+  //
+  // public/ holds exactly what goes public — nothing else. Pointing this at
+  // the repo root instead was tried and rejected: wrangler walked .git/ (190
+  // files vs 35 real ones), and an .assetsignore allowlist did not stop it.
+  // A dedicated directory makes "what is published" structural rather than
+  // dependent on an ignore file behaving as expected.
+  "assets": {
+    "directory": "../public/",
+    // Assets are served first for everything else; only /api/* reaches the
+    // Worker script, so no static file can ever shadow the API.
+    "run_worker_first": ["/api/*"]
+  },
+
   // Same-origin routes are the primary path: the page and /api/* share
   // amyeng.top, so there is no CORS preflight — one less round trip on a
   // flaky mainland connection. The api. subdomain is the fallback for when
