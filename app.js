@@ -198,6 +198,14 @@ const App = {
         ? Api.saveCheckin(sid, dayIdx, this._countDayQuestions(dayIdx))
         : null)
       .catch(e => console.warn('Record answer failed:', e));
+    // Speaking questions must NOT auto-advance: picking the right option is
+    // only the gate into the read-along, which is the actual exercise. That
+    // flow advances itself when the child finishes reading.
+    const mod = (HOMEWORK_DATA[dayIdx] || {}).modules || [];
+    if (mod[moduleIdx] && mod[moduleIdx].type === 'speaking') {
+      clearTimeout(this._advanceTimer);
+      return;
+    }
     // Answered right → move on by itself. Answered wrong → stay put, so the
     // child can read the explanation and move on when they are ready.
     if (correct) this._scheduleAdvance(1300);
@@ -1732,13 +1740,19 @@ const App = {
       const rows = byDay[k].slice().sort((a, b) => (b.at || '').localeCompare(a.at || ''));
       html += '<div class="card mb-16">';
       html += '<div class="card-title">' + (day ? day.day_cn + '（' + this.getDayDateLabel(Number(k), 0) + '）' : '未归类') + '</div>';
-      html += '<table class="data-table"><thead><tr><th>学生</th><th>内容</th><th>轮次</th><th>音量分</th><th>时间</th><th>录音</th></tr></thead><tbody>';
+      html += '<table class="data-table"><thead><tr><th>学生</th><th>内容</th><th>轮次</th><th>得分</th><th>分数来源</th><th>时间</th><th>录音</th></tr></thead><tbody>';
       rows.forEach(r => {
         const score = r.score || 0;
+        // Where the number came from matters more than the number: none of
+        // these measure pronunciation.
+        const src = r.source === 'asr' ? '语音识别比对'
+                  : r.source === 'self' ? '学生自评'
+                  : '音量';
         html += '<tr><td>' + nameOf(r.studentId) + '</td>';
         html += '<td>' + (r.label || '-') + '</td>';
         html += '<td>' + (r.round || 1) + '</td>';
         html += '<td>' + score + '</td>';
+        html += '<td class="fs-12 text-sub">' + src + '</td>';
         html += '<td class="fs-12">' + (r.at ? r.at.slice(11, 16) : '-') + '</td>';
         html += '<td>' + (r.audioUrl
           ? '<audio controls preload="none" src="' + r.audioUrl + '" style="height:30px;max-width:200px"></audio>'
@@ -1747,7 +1761,8 @@ const App = {
       html += '</tbody></table>';
       // The volume-based score says nothing about pronunciation — say so
       // rather than letting the teacher read it as an assessment.
-      html += '<p class="fs-12 text-sub mt-8">⚠️ 当前得分按音量计算，不代表发音准确度。请点开录音试听判断。</p>';
+      html += '<p class="fs-12 text-sub mt-8">以上分数来自音量、学生自评或语音识别比对，'
+           + '<strong>都不能代表发音准确度</strong>。请点开录音试听判断。</p>';
       html += '</div>';
     });
     return html;
@@ -2242,6 +2257,9 @@ const App = {
     const readArea = document.getElementById('sp-read-' + mi);
     var self = this;
 
+    // Capture the audio for real, in parallel with speech recognition.
+    this._startClipCapture();
+
     // Show recording UI immediately with animation
     readArea.innerHTML = '<div class="speak-record show" style="text-align:center">' +
       '<div class="recording-indicator"><div class="rec-mic">🎤</div><div class="rec-pulse"></div></div>' +
@@ -2301,6 +2319,7 @@ const App = {
       // Let the child practice reading for a few seconds
       setTimeout(function() {
         clearInterval(self._recTimerInterval);
+        self._finishClipCapture();
         self._showSelfAssessment(mi, qi, dayIdx, q);
       }, 3000);
     }
@@ -2309,6 +2328,7 @@ const App = {
   // Stop reading manually (when child clicks "结束朗读")
   _stopReading(mi, qi, dayIdx) {
     if (this._recTimerInterval) { clearInterval(this._recTimerInterval); this._recTimerInterval = null; }
+    this._finishClipCapture();   // release the mic now; blob is buffered
     if (this._currentRec) {
       try { this._currentRec.stop(); } catch(e) {}
       this._currentRec = null;
@@ -2343,8 +2363,11 @@ const App = {
     } else {
       html += '<div class="badge badge-success" style="font-size:16px;align-self:center">🎉 全部完成！</div>';
     }
-    html += '</div></div>';
+    html += '</div>';
+    html += '<div id="sp-clip-' + mi + '" class="mt-8"></div>';
+    html += '</div>';
     readArea.innerHTML = html;
+    this._persistSpeakingClip(mi, qi, dayIdx, q, score, { spoken: spoken, source: 'asr' });
   },
 
   // Self-assessment mode (when speech recognition is not available)
@@ -2385,15 +2408,94 @@ const App = {
     } else {
       html += '<div class="badge badge-success" style="font-size:16px;align-self:center">🎉 全部完成！</div>';
     }
-    html += '</div></div>';
+    html += '</div>';
+    html += '<div id="sp-clip-' + mi + '" class="mt-8"></div>';
+    html += '</div>';
     readArea.innerHTML = html;
+    this._persistSpeakingClip(mi, qi, dayIdx, q, score, { source: 'self' });
   },
 
   // fallbackPron removed - replaced by _showSelfAssessment for better UX
 
   nextSpeaking(mi, qi, dayIdx) {
+    // In the student's one-question stage each speaking question IS a step —
+    // advancing in place would leave the progress counter behind.
+    if (!this.isTeacher()) { this.nextStep(); return; }
     const m = HOMEWORK_DATA[dayIdx].modules[mi];
     document.getElementById('sp-content-' + mi).innerHTML = this.renderSpeakingQuestion(m, mi, qi, dayIdx);
+  },
+
+  // ===== Speaking: real audio capture =====
+  // The read-along UI used to say "正在录音…" while capturing nothing — it
+  // only ran speech recognition. Now the audio is actually kept, so the
+  // teacher can listen and judge pronunciation themselves.
+  async _startClipCapture() {
+    this._spClip = null;
+    if (!navigator.mediaDevices || !window.MediaRecorder) return false;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(stream);
+      const chunks = [];
+      rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+      rec.start();
+      this._spClip = { rec, chunks, stream };
+      return true;
+    } catch (e) {
+      // Denied or unavailable: the read-along still works, just without audio.
+      console.warn('Clip capture unavailable:', e);
+      return false;
+    }
+  },
+
+  // Idempotent: called as soon as the child stops reading (so the mic is
+  // released and we don't record the silence while they self-score), and
+  // again when the result is persisted. The blob is buffered in between.
+  _finishClipCapture() {
+    if (this._spClipPending) return this._spClipPending;
+    const c = this._spClip;
+    this._spClip = null;
+    if (!c) return Promise.resolve(this._spClipBlob || null);
+    this._spClipPending = new Promise(resolve => {
+      const done = () => {
+        try { c.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+        this._spClipBlob = c.chunks.length
+          ? new Blob(c.chunks, { type: c.rec.mimeType || 'audio/webm' }) : null;
+        this._spClipPending = null;
+        resolve(this._spClipBlob);
+      };
+      c.rec.onstop = done;
+      try { c.rec.state !== 'inactive' ? c.rec.stop() : done(); } catch (e) { done(); }
+    });
+    return this._spClipPending;
+  },
+
+  // Persist the clip + score, then drop a player into the result view.
+  async _persistSpeakingClip(mi, qi, dayIdx, q, score, extra) {
+    const blob = await this._finishClipCapture();
+    this._spClipBlob = null;              // consumed; next attempt starts clean
+    const meta = Object.assign({
+      studentId: this._myStudentId(),
+      dayIdx: dayIdx, moduleIdx: mi, itemIdx: qi, round: 1,
+      type: 'speaking', label: q.sentence, score: score,
+    }, extra || {});
+
+    let clipId = null, url = null;
+    if (blob) {
+      try {
+        const saved = await Api.uploadRecording(blob, meta);
+        clipId = saved.id; url = saved.url;
+      } catch (e) { console.warn('Speaking clip upload failed:', e); }
+    }
+    try { await Api.submitSpeakingScore(Object.assign({ clipId }, meta)); }
+    catch (e) { console.warn('Speaking score save failed:', e); }
+
+    const slot = document.getElementById('sp-clip-' + mi);
+    if (slot) {
+      slot.innerHTML = url
+        ? '<div class="fs-12 text-sub mb-4">你的朗读</div>'
+          + '<audio controls src="' + url + '" style="width:100%;max-width:280px;height:32px"></audio>'
+        : '<div class="fs-12 text-sub">本次没有录到音频（可能未授权麦克风）</div>';
+    }
   },
 
   calcPronScore(target, spoken) {
