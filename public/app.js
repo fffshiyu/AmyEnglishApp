@@ -417,7 +417,7 @@ const App = {
     // photo for a child.
     const headerPhoto = document.getElementById('header-photo');
     if (headerPhoto) {
-      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=49';
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=50';
       headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
@@ -3967,9 +3967,17 @@ const App = {
       if (m.passage) {
         this._splitSentences(m.passage).forEach((sent, si) =>
           steps.push({ mi, si, kind: 'sentence' }));
-        steps.push({ mi, kind: 'passage' });
         const pairs = this._pairSentences(m);
-        if (pairs) pairs.forEach((pr, si) => steps.push({ mi, si, kind: 'translate' }));
+        if (pairs) {
+          // Read it sentence by sentence, then translate it sentence by
+          // sentence. No full-text screen in between.
+          pairs.forEach((pr, si) => steps.push({ mi, si, kind: 'translate' }));
+        } else {
+          // Falls back to the whole-passage screen only where the English and
+          // Chinese sentences do not line up, so that passage still gets a
+          // translation exercise rather than none at all.
+          steps.push({ mi, kind: 'passage' });
+        }
       }
       if (m.questions) m.questions.forEach((q, qi) => steps.push({ mi, qi, kind: 'question' }));
     });
@@ -4102,9 +4110,12 @@ const App = {
       var nextStep = steps[this.state.stepIdx + 1];
       var label;
       if (this.state.stepIdx === steps.length - 1) label = '完成';
-      else if (step.kind === 'sentence') label = nextStep && nextStep.kind === 'passage' ? '看全文' : '下一句';
+      else if (step.kind === 'sentence')
+        label = nextStep && nextStep.kind === 'sentence' ? '下一句'
+              : nextStep && nextStep.kind === 'translate' ? '开始翻译'
+              : nextStep && nextStep.kind === 'passage' ? '整篇翻译' : '下一题';
       else if (step.kind === 'translate') label = nextStep && nextStep.kind === 'translate' ? '下一句' : '开始做题';
-      else if (step.kind === 'passage') label = nextStep && nextStep.kind === 'translate' ? '逐句翻译' : '下一题';
+      else if (step.kind === 'passage') label = '开始做题';
       else label = '下一题';
       html += '<button class="btn-ghost" id="stage-next-btn" onclick="App.nextStep()">' + label + '</button>';
     }
@@ -4483,7 +4494,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder"><img src="photo.jpeg?v=49" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=50" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>
