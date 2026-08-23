@@ -416,7 +416,7 @@ const App = {
     // photo for a child.
     const headerPhoto = document.getElementById('header-photo');
     if (headerPhoto) {
-      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=45';
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=46';
       headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
@@ -560,11 +560,18 @@ const App = {
     self._ttsDone = false;
     self._audioStarted = false;
 
-    // Use Youdao TTS for ALL text (words AND sentences) — it is the most
-    // reliable cross-browser endpoint and handles full sentences fine.
-    var ttsUrl = 'https://dict.youdao.com/dictvoice?audio=' + encoded + '&type=2';
-    // Baidu TTS as secondary fallback URL
-    var fallbackUrl = 'https://fanyi.baidu.com/gettts?lan=en&text=' + encoded + '&spd=3&source=web';
+    // Pick the endpoint by what is being spoken. Youdao's dictvoice is a
+    // DICTIONARY endpoint: it returns audio for a word and HTTP 500 for a
+    // sentence (measured). That is why words played and sentences were silent
+    // — desktop happened to recover through speechSynthesis, mobile browsers
+    // did not. Sentences therefore go to Baidu first, with our own same-origin
+    // endpoint behind it.
+    var isSentence = /\s/.test(cleanText.trim());
+    var youdao = 'https://dict.youdao.com/dictvoice?audio=' + encoded + '&type=2';
+    var baidu  = 'https://fanyi.baidu.com/gettts?lan=en&text=' + encoded + '&spd=3&source=web';
+    var ownTts = '/api/tts?text=' + encoded;
+    var ttsUrl      = isSentence ? baidu  : youdao;
+    var fallbackUrl = isSentence ? ownTts : baidu;
 
     var timeoutId = null;
     var absoluteTimeout = null;
@@ -3103,14 +3110,11 @@ const App = {
     html += '<div id="sent-result-' + mi + '-' + si + '"></div>';
     html += '</div>';
 
-    // Play it once on arrival so the child hears the model without hunting
-    // for a button. If audio has not been unlocked yet, park it — the first
-    // tap will release it rather than swallowing this sentence.
-    const self = this;
-    setTimeout(function() {
-      if (self._ttsUnlocked) self.speak(sent);
-      else self._pendingSpeak = sent;
-    }, 250);
+    // Register the sentence to be spoken; the navigation call speaks it while
+    // still inside the tap. iOS Safari only allows playback from within the
+    // synchronous call stack of a user gesture — a setTimeout here worked on
+    // desktop and silently did nothing on iPhone.
+    this._speakOnRender = sent;
     return html;
   },
 
@@ -3800,6 +3804,17 @@ const App = {
     this._advanceTimer = setTimeout(() => this.nextStep(), delay || 1400);
   },
 
+  // Speak whatever the freshly rendered step registered, still inside the tap
+  // that triggered it. If audio has not been unlocked yet, park it for the
+  // first tap instead of losing it.
+  _flushSpeakOnRender() {
+    var sent = this._speakOnRender;
+    this._speakOnRender = null;
+    if (!sent) return;
+    if (this._ttsUnlocked) this.speak(sent);
+    else this._pendingSpeak = sent;
+  },
+
   nextStep() {
     clearTimeout(this._advanceTimer);
     this._stopCurrentAudio();
@@ -3807,6 +3822,7 @@ const App = {
     if (this.state.stepIdx < steps.length - 1) {
       this.state.stepIdx++;
       this.renderContent();
+      this._flushSpeakOnRender();
     } else {
       this.state.stepIdx = steps.length;   // -> completion screen
       this.renderContent();
@@ -3816,7 +3832,7 @@ const App = {
   prevStep() {
     clearTimeout(this._advanceTimer);
     this._stopCurrentAudio();
-    if (this.state.stepIdx > 0) { this.state.stepIdx--; this.renderContent(); }
+    if (this.state.stepIdx > 0) { this.state.stepIdx--; this.renderContent(); this._flushSpeakOnRender(); }
   },
 
   goToStep(i) {
@@ -3824,6 +3840,7 @@ const App = {
     this._stopCurrentAudio();
     this.state.stepIdx = i;
     this.renderContent();
+    this._flushSpeakOnRender();
   },
 
   // The fixed, non-scrolling stage. Only the passage box scrolls internally
@@ -4282,7 +4299,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder"><img src="photo.jpeg?v=45" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=46" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>

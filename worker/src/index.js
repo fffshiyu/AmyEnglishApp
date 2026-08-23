@@ -27,6 +27,10 @@ export default {
       return cors(json({ ok: true }), env);
     }
 
+    if (url.pathname === '/api/tts') {
+      return cors(await tts(request, env, ctx), env);
+    }
+
     if (url.pathname === '/api/transcribe') {
       if (request.method !== 'POST') return cors(json({ error: 'method_not_allowed' }, 405), env);
       return cors(await transcribe(request, env), env);
@@ -35,6 +39,57 @@ export default {
     return cors(json({ error: 'not_found' }, 404), env);
   },
 };
+
+// Text-to-speech from our own origin.
+//
+// The app used to point <audio> at 有道/百度 TTS URLs. Those are third-party
+// cross-origin resources: they work in desktop Chrome and fail in restricted
+// mobile browsers (Xiaomi's built-in browser plays nothing). Serving the audio
+// from the same origin as the page removes that whole class of problem.
+//
+// Responses are cached — 45 children read the same sentences over and over,
+// so almost every request after the first is a cache hit and costs nothing.
+const TTS_MODEL = '@cf/deepgram/aura-2-en';
+const TTS_MAX_CHARS = 900;
+
+async function tts(request, env, ctx) {
+  const url = new URL(request.url);
+  const text = (url.searchParams.get('text') || '').trim();
+  if (!text) return json({ error: 'no_text' }, 400);
+  if (text.length > TTS_MAX_CHARS) return json({ error: 'too_long' }, 413);
+
+  const cacheKey = new Request(url.origin + '/api/tts?text=' + encodeURIComponent(text), { method: 'GET' });
+  const cache = caches.default;
+  const hit = await cache.match(cacheKey);
+  if (hit) return hit;
+
+  let audio;
+  try {
+    audio = await env.AI.run(TTS_MODEL, { text: text });
+  } catch (e) {
+    return json({ error: 'tts_failed', detail: String(e && e.message || e) }, 502);
+  }
+
+  // The binding returns either a ReadableStream or an object holding base64.
+  let body = audio;
+  if (audio && typeof audio === 'object' && !(audio instanceof ReadableStream)) {
+    if (audio.audio) {
+      const bin = atob(audio.audio);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      body = bytes;
+    }
+  }
+
+  const res = new Response(body, {
+    headers: {
+      'Content-Type': 'audio/mpeg',
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    },
+  });
+  ctx.waitUntil(cache.put(cacheKey, res.clone()));
+  return res;
+}
 
 async function transcribe(request, env) {
   // Reject oversized bodies before buffering them.
