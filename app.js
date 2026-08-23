@@ -1011,6 +1011,9 @@ const App = {
       this._visibilityHandler = function() {
         if (document.visibilityState === 'visible' && self.state.phone) {
           self.syncFromCloud();
+          // Clips whose transcription failed on a bad connection get another
+          // go here — the audio is already safe in IndexedDB.
+          Api.retryPendingTranscripts().catch(function(){});
         }
       };
       document.addEventListener('visibilitychange', this._visibilityHandler);
@@ -2348,24 +2351,42 @@ const App = {
 
   // The single place a read-along ends: child taps 结束朗读, recognition
   // returns, or the 20s cap fires. Whichever happens first wins.
-  _finishRead(mi, qi, dayIdx) {
+  async _finishRead(mi, qi, dayIdx) {
     if (this._readFinished) return;
     this._readFinished = true;
     clearTimeout(this._readCapTimer);
     if (this._recTimerInterval) { clearInterval(this._recTimerInterval); this._recTimerInterval = null; }
     if (this._currentRec) { try { this._currentRec.stop(); } catch(e) {} this._currentRec = null; }
-    this._finishClipCapture();          // release the mic; blob is buffered
 
     const m = HOMEWORK_DATA[dayIdx].modules[mi];
     const q = m.questions[qi];
+    const readArea = document.getElementById('sp-read-' + mi);
 
-    if (this._asrDelivered && this._asrTranscript) {
-      const spoken = this._asrTranscript;
+    // Release the mic and get the WAV. Everything below has the audio in hand,
+    // so nothing the network does can lose the child's work.
+    const blob = await this._finishClipCapture();
+
+    // Local recognition (SpeechRecognition) wins if it already answered —
+    // it costs nothing and is instant. Otherwise ask our own Worker.
+    let spoken = (this._asrDelivered && this._asrTranscript) ? this._asrTranscript : null;
+
+    if (!spoken && blob) {
+      if (readArea) {
+        readArea.innerHTML = '<div class="speak-record show" style="text-align:center">'
+          + '<p style="font-size:15px;color:var(--primary);margin-bottom:6px">正在识别…</p>'
+          + '<p class="fs-12 text-sub">正在比对你读的和原句</p></div>';
+      }
+      const out = await Api.transcribe(blob, null);
+      if (out && out.text) { spoken = out.text.toLowerCase(); this._asrSource = 'worker'; }
+    }
+
+    if (spoken) {
       this._showReadResult(mi, qi, dayIdx, q,
         this.calcPronScore(q.sentence.toLowerCase(), spoken), spoken,
         this.findWrongWords(q.sentence.toLowerCase(), spoken));
     } else {
-      this._showSelfAssessment(mi, qi, dayIdx, q, this._asrFailed || '没有识别到内容');
+      this._showSelfAssessment(mi, qi, dayIdx, q,
+        blob ? '这次没识别出内容' : (this._asrFailed || '没有录到音频'));
     }
   },
 
@@ -2501,21 +2522,14 @@ const App = {
   _startClipCapture() {
     this._spClip = null;
     this._spClipBlob = null;
-    if (!navigator.mediaDevices || !window.MediaRecorder) {
+    if (!Recorder.supported()) {
       this._spClipStarting = null;
       return Promise.resolve(false);
     }
-    // Held so that a finish() arriving before getUserMedia resolves still waits
-    // for the recorder — otherwise the clip is lost AND the mic stays open.
-    this._spClipStarting = navigator.mediaDevices.getUserMedia({ audio: true })
-      .then(stream => {
-        const rec = new MediaRecorder(stream);
-        const chunks = [];
-        rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
-        rec.start();
-        this._spClip = { rec, chunks, stream };
-        return true;
-      })
+    // Held so that a finish() arriving before the mic is ready still waits for
+    // the recorder — otherwise the clip is lost AND the mic stays open.
+    this._spClipStarting = Recorder.start()
+      .then(() => { this._spClip = true; return true; })
       .catch(e => {
         // Denied or unavailable: the read-along still works, just without audio.
         console.warn('Clip capture unavailable:', e);
@@ -2535,20 +2549,16 @@ const App = {
       try { await this._spClipStarting; } catch (e) {}
       this._spClipStarting = null;
     }
-    const c = this._spClip;
+    if (!this._spClip) return this._spClipBlob || null;
     this._spClip = null;
-    if (!c) return this._spClipBlob || null;
-    this._spClipPending = new Promise(resolve => {
-      const done = () => {
-        try { c.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
-        this._spClipBlob = c.chunks.length
-          ? new Blob(c.chunks, { type: c.rec.mimeType || 'audio/webm' }) : null;
+    this._spClipPending = Recorder.stop()
+      .then(out => {
+        this._spClipBlob = out ? out.blob : null;
+        this._spClipMeta = out ? { duration: out.duration, sampleRate: out.sampleRate, peak: out.peak } : null;
         this._spClipPending = null;
-        resolve(this._spClipBlob);
-      };
-      c.rec.onstop = done;
-      try { c.rec.state !== 'inactive' ? c.rec.stop() : done(); } catch (e) { done(); }
-    });
+        return this._spClipBlob;
+      })
+      .catch(e => { console.warn('Recorder.stop failed:', e); this._spClipPending = null; return null; });
     return this._spClipPending;
   },
 

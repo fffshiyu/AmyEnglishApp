@@ -580,6 +580,72 @@ const Api = {
     } catch (e) { console.warn('fetchMyAssignment error:', e); return null; }
   },
 
+  // -- speech recognition -------------------------------------------------
+  // Posts 16kHz mono WAV to our own Worker, which calls Workers AI Whisper.
+  // Deliberately NOT the browser's SpeechRecognition: that is Chrome-only and
+  // streams the audio to Google, which is unreachable from the mainland.
+  //
+  // Recognition is an enhancement, never a dependency. Every caller must work
+  // when this returns null: the clip is already saved locally by then, and the
+  // teacher can listen regardless.
+  TRANSCRIBE_URL: '/api/transcribe',
+  TRANSCRIBE_TIMEOUT: 12000,
+
+  async transcribe(blob, meta) {
+    if (!blob) return null;
+    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), this.TRANSCRIBE_TIMEOUT) : null;
+    try {
+      const res = await fetch(this.TRANSCRIBE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'audio/wav' },
+        body: blob,
+        signal: ctrl ? ctrl.signal : undefined,
+      });
+      if (timer) clearTimeout(timer);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      return { text: (data.text || '').trim(), words: data.words || null };
+    } catch (e) {
+      if (timer) clearTimeout(timer);
+      console.warn('transcribe failed:', e && e.name === 'AbortError' ? 'timeout' : e);
+      // Park it so a later attempt can fill the transcript in.
+      if (meta && meta.clipId) this._queueTranscribe(meta.clipId);
+      return null;
+    }
+  },
+
+  // Clips awaiting a retry. Kept as ids only — the audio itself is already
+  // in IndexedDB, so nothing is lost if the tab closes.
+  _queueTranscribe(clipId) {
+    try {
+      const q = JSON.parse(localStorage.getItem('amy_tx_queue') || '[]');
+      if (q.indexOf(clipId) === -1) { q.push(clipId); localStorage.setItem('amy_tx_queue', JSON.stringify(q)); }
+    } catch (e) {}
+  },
+
+  // Retry parked clips. Safe to call on a timer or when the app regains focus.
+  async retryPendingTranscripts() {
+    let q = [];
+    try { q = JSON.parse(localStorage.getItem('amy_tx_queue') || '[]'); } catch (e) { return 0; }
+    if (!q.length) return 0;
+    let done = 0;
+    for (const clipId of q.slice(0, 3)) {          // a few at a time
+      let clip = null;
+      try { clip = await RecStore.get(RecStore.CLIPS, clipId); } catch (e) {}
+      if (!clip || !clip.blob) { q = q.filter(x => x !== clipId); continue; }
+      const out = await this.transcribe(clip.blob, null);
+      if (out && out.text) {
+        const rec = (await this.getSpeakingRecords({})).find(r => r.clipId === clipId);
+        if (rec) { rec.spoken = out.text; rec.source = 'asr'; await RecStore.put(RecStore.SCORES, rec); }
+        q = q.filter(x => x !== clipId);
+        done++;
+      }
+    }
+    try { localStorage.setItem('amy_tx_queue', JSON.stringify(q)); } catch (e) {}
+    return done;
+  },
+
   // -- cloud sync ---------------------------------------------------------
   async syncUp(students, classes) {
     const res = await CloudSync.up(students, classes);
