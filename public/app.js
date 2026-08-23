@@ -403,7 +403,7 @@ const App = {
     // photo for a child.
     const headerPhoto = document.getElementById('header-photo');
     if (headerPhoto) {
-      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=36';
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=38';
       headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
@@ -3039,11 +3039,15 @@ const App = {
          .replace(/ph/g, 'f').replace(/ck/g, 'k').replace(/qu/g, 'kw')
          .replace(/ch/g, 'sh')                 // chine -> shine
          .replace(/gh/g, '')                   // silent
-         .replace(/([a-z])\1+/g, '$1')          // full -> ful
-         .replace(/e$/, '')                    // silent final e
-         .replace(/([aeiou])w$/, '$1')         // know -> kno -> no
-         .replace(/([aeiou])\1/g, '$1');
-    return x;
+         .replace(/([a-z])\1+/g, '$1');         // full -> ful
+    // Silent-final-e and the w/vowel rules only make sense on a real word.
+    // Applied to a single letter they erase it — "e" became "" and then
+    // matched nothing, so a correctly read E scored as missed.
+    if (x.length > 2) {
+      x = x.replace(/e$/, '').replace(/([aeiou])w$/, '$1');
+    }
+    x = x.replace(/([aeiou])\1/g, '$1');
+    return x || String(w).toLowerCase().replace(/[^a-z]/g, '');
   },
 
   // Lenient on purpose: one edit apart still counts. Being strict here means
@@ -3079,7 +3083,8 @@ const App = {
     var selfSync = this;
     setTimeout(function(){ selfSync._syncVocabFootLabel(mi, dayIdx); }, 0);
     this._spell = { mi: mi, kind: kind, word: word.word, total: units.length,
-                    takes: {}, unitScores: {}, wordTake: null, score: null };
+                    takes: {}, unitScores: {}, wordTake: null, score: null,
+                    units: units.slice(), phase: 'pieces' };
 
     var html = '<div class="vocab-step-label">' + (kind === 'letter' ? '字母跟读' : '音节拼合') + '</div>';
     html += '<div class="vocab-emoji-card" style="width:100px;height:100px;font-size:52px">' + word.emoji + '</div>';
@@ -3127,8 +3132,13 @@ const App = {
       if (out.samples) self._spell.takes[idx] = out.samples;   // kept for the joined playback
       self._spell.finished = false;      // a new take must re-run the summary
 
+      // Hear the model right after your own attempt — that comparison is the
+      // point of the drill, and it replaces the stitched playback that used
+      // to come only at the very end.
+      self.speak(label);
+
       if (!scored) {
-        if (status) status.innerHTML = '<div class="tap-result good">已录「' + label + '」</div>';
+        if (status) status.innerHTML = '<div class="tap-result good">已读「' + label + '」</div>';
       } else {
         var ok = self._soundAlike(label, text);
         self._spell.unitScores[idx] = { label: label, ok: ok, heard: text };
@@ -3159,6 +3169,7 @@ const App = {
       if (el) el.classList.remove('reading');
       if (!out) return;
       if (el) el.classList.add('read-done');
+      self.speak(wordText);
       self._spell.finished = false;      // re-reading must re-score and redraw
       var a = self.alignSpeech(wordText, text || '');
       self._spell.wordTake = out.samples || null;
@@ -3198,69 +3209,139 @@ const App = {
 
   // Stitch every take into one clip so the child hears the pieces then the
   // whole word in sequence, and show the word score.
+  // Phase A summary. Deliberately compact: it has to fit the fixed stage
+  // height without scrolling, so scores go in a grid rather than one row per
+  // letter, and there is no audio player here — the recording belongs to
+  // phase B, where the whole thing is read in one breath.
   _finishSpell(mi) {
     var sp = this._spell;
     var area = document.getElementById('spell-result-area-' + mi);
-    var chunks = [];
-    for (var i = 0; i < sp.total; i++) if (sp.takes[i]) chunks.push(sp.takes[i]);
-    if (sp.wordTake) chunks.push(sp.wordTake);
-    var joined = Recorder.join(chunks, 0.25);
+    if (!area) return;
 
-    var html = '<div class="letter-comprehensive">';
-    html += '<div class="lc-label">' + sp.word + '</div>';
+    var cells = '';
+    for (var i = 0; i < sp.total; i++) {
+      var u = sp.unitScores[i];
+      var lbl = (u && u.label) || (sp.units && sp.units[i]) || '·';
+      if (sp.kind === 'letter') lbl = String(lbl).toUpperCase();
+      var state = !u ? 'na' : (u.ok === undefined ? 'done' : (u.ok ? 'ok' : 'bad'));
+      cells += '<span class="sc-cell ' + state + '">' + lbl + '</span>';
+    }
     var noSpeech = !sp.heard;
-    html += '<div class="lc-score">' + (noSpeech || sp.score === null ? '—' : sp.score) + '</div>';
-    html += '<div class="fs-12 text-sub">'
-         + (noSpeech ? '没听清，按住上面的单词再读一次' : '整词得分') + '</div>';
-    if (sp.kind === 'syllable') {
-      var okN = 0, rows = '';
-      for (var k = 0; k < sp.total; k++) {
-        var u = sp.unitScores[k];
-        if (u && u.ok) okN++;
-        rows += '<div class="letter-detail-row"><span class="ldr-letter">'
-             + (u ? u.label : '-') + '</span><span class="ldr-score" style="color:'
-             + (u && u.ok ? 'var(--ink)' : '#D6321F') + '">'
-             + (u ? (u.ok ? '读对' : '再练练') : '未读') + '</span></div>';
-      }
-      html += '<div class="fs-12 text-sub">音节读对 ' + okN + '/' + sp.total + '</div>';
-      html += '<div style="margin:12px 0;text-align:left">' + rows + '</div>';
-    }
-    if (joined) {
-      html += '<div class="mt-8"><div class="fs-12 text-sub mb-4">你的朗读（逐个 + 整词）</div>'
-           + '<audio id="spell-audio-' + mi + '" controls src="' + URL.createObjectURL(joined.blob)
-           + '" style="width:100%;max-width:300px;height:34px"></audio>'
-           + '<div class="fs-12 text-sub mt-4" id="spell-play-hint-' + mi + '"></div></div>';
-    }
+
+    var html = '<div class="spell-summary">';
+    html += '<div class="ss-head"><span class="ss-score">'
+         + (noSpeech || sp.score === null ? '—' : sp.score) + '</span>'
+         + '<span class="ss-label">' + (noSpeech ? '整词没听清' : '整词得分') + '</span></div>';
+    html += '<div class="sc-grid">' + cells + '</div>';
+    html += '<button class="word-read-btn" onclick="App.startContinuous(' + mi + ')">连续读一遍 →</button>';
     html += '</div>';
-    if (area) area.innerHTML = html;
-
-    // Keep the joined clip so the teacher can hear it too.
-    if (joined) {
-      Api.uploadRecording(joined.blob, {
-        studentId: this._myStudentId(), dayIdx: this.state.currentDay,
-        moduleIdx: mi, itemIdx: 98, round: 1, type: 'spell',
-        label: sp.word, score: sp.score,
-      }).catch(function(){});
-    }
-    var btn = document.getElementById('letter-read-btn-' + mi);
-    if (btn) btn.style.display = 'block';
+    area.innerHTML = html;
+    this._playCelebrate();
     this._syncVocabFootLabel(mi, this.state.currentDay);
-
-    // Autoplay is blocked unless the browser has seen a user gesture. Holding
-    // to record is one, but the transcription await in between can outlive it
-    // — so fall back to telling the child to hit play rather than silently
-    // doing nothing.
-    var audio = document.getElementById('spell-audio-' + mi);
-    if (audio) {
-      var hint = document.getElementById('spell-play-hint-' + mi);
-      var p = audio.play();
-      if (p && p.catch) {
-        p.catch(function() { if (hint) hint.textContent = '点上面的播放键听你的朗读'; });
-      }
-    } else {
-      this._playCelebrate();
-    }
   },
+
+  // ===== Phase B: read the whole thing in one take =====
+  // One hold, letters then the word, straight through. This is the take that
+  // gets recorded, played back and scored — the phase A drill is for hearing
+  // each piece against the model.
+  startContinuous(mi) {
+    var sp = this._spell;
+    if (!sp) return;
+    sp.phase = 'continuous';
+    var seq = (sp.units || []).map(function(u) {
+      return sp.kind === 'letter' ? String(u).toUpperCase() : u;
+    }).concat([sp.word]);
+    var area = document.getElementById('spell-result-area-' + mi);
+    var row = document.getElementById('spell-row-' + mi);
+    if (row) row.style.display = 'none';
+    var instr = document.querySelector('.read-instruction');
+    if (instr) instr.textContent = '按住不放，把下面的字母和单词连着读一遍';
+
+    var html = '<div class="cont-seq">' + seq.map(function(x, i) {
+      return '<span class="cont-item" id="cont-' + mi + '-' + i + '">' + x + '</span>';
+    }).join('') + '</div>';
+    html += '<button class="word-read-btn hold-target" id="cont-btn-' + mi + '"'
+         + ' onpointerdown="App._readContinuous(event,' + mi + ')"'
+         + ' onpointerup="App._holdEnd(event)" onpointercancel="App._holdEnd(event)"'
+         + ' oncontextmenu="return false">按住连续读</button>';
+    html += '<div id="cont-status-' + mi + '"></div>';
+    html += '<div id="cont-result-' + mi + '"></div>';
+    if (area) area.innerHTML = html;
+  },
+
+  _readContinuous(ev, mi) {
+    var self = this;
+    var sp = this._spell;
+    var btn = document.getElementById('cont-btn-' + mi);
+    var status = document.getElementById('cont-status-' + mi);
+    var seq = (sp.units || []).concat([sp.word]);
+    if (btn) btn.classList.add('reading');
+
+    this._holdStart(ev, 'cont-' + mi, sp.word, status, function(out, text) {
+      if (btn) btn.classList.remove('reading');
+      if (!out) return;
+      var res = self._scoreSequence(seq, text);
+      sp.contScore = res.score;
+      sp.contHeard = text;
+
+      // Mark which pieces were actually heard.
+      seq.forEach(function(x, i) {
+        var el = document.getElementById('cont-' + mi + '-' + i);
+        if (el) el.className = 'cont-item ' + (res.hits[i] ? 'ok' : 'miss');
+      });
+
+      var joined = out.samples ? Recorder.join([out.samples], 0) : null;
+      var html = '<div class="spell-summary">';
+      html += '<div class="ss-head"><span class="ss-score">'
+           + (text ? res.score : '—') + '</span><span class="ss-label">'
+           + (text ? '连续读得分 · 读到 ' + res.ok + '/' + seq.length : '没听清，再读一次') + '</span></div>';
+      if (joined) {
+        html += '<audio id="cont-audio-' + mi + '" controls src="' + URL.createObjectURL(joined.blob)
+             + '" style="width:100%;max-width:280px;height:32px"></audio>';
+      }
+      html += '<div class="ss-actions">';
+      html += '<button class="btn-ghost" onclick="App.startContinuous(' + mi + ')">再读一次</button>';
+      html += '</div></div>';
+      var slot = document.getElementById('cont-result-' + mi);
+      if (slot) slot.innerHTML = html;
+      if (status) status.innerHTML = '';
+
+      var audio = document.getElementById('cont-audio-' + mi);
+      if (audio) { var p = audio.play(); if (p && p.catch) p.catch(function(){}); }
+
+      Api.uploadRecording(out.blob, {
+        studentId: self._myStudentId(), dayIdx: self.state.currentDay,
+        moduleIdx: mi, itemIdx: 97, round: 1, type: 'continuous',
+        label: sp.word, score: res.score, spoken: text,
+      }).catch(function(){});
+      Api.submitSpeakingScore({
+        studentId: self._myStudentId(), dayIdx: self.state.currentDay,
+        moduleIdx: mi, itemIdx: 97, round: 1, type: 'continuous',
+        label: sp.word, score: res.score, spoken: text, source: 'asr',
+      });
+      self._syncVocabFootLabel(mi, self.state.currentDay);
+    });
+  },
+
+  // How much of the expected sequence turned up, in order. Each expected item
+  // is matched by sound, not spelling — the recogniser writes "No." for know
+  // and "T" for ti.
+  _scoreSequence(expected, transcript) {
+    var hits = new Array(expected.length).fill(false);
+    if (!transcript) return { score: 0, ok: 0, hits: hits };
+    var toks = String(transcript).toLowerCase().replace(/[^a-z0-9\s]/g, ' ')
+                 .split(/\s+/).filter(Boolean);
+    var cursor = 0, ok = 0;
+    for (var i = 0; i < expected.length; i++) {
+      for (var j = cursor; j < toks.length; j++) {
+        if (this._soundAlike(expected[i], toks[j])) {
+          hits[i] = true; ok++; cursor = j + 1; break;
+        }
+      }
+    }
+    return { score: Math.round(ok / expected.length * 100), ok: ok, hits: hits };
+  },
+
 
   // ===== Press and hold to record =====
   // Hold to speak, release to stop — the gesture from a voice message. Pointer
@@ -3883,7 +3964,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder"><img src="photo.jpeg?v=36" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=38" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>

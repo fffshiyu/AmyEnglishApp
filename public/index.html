@@ -140,6 +140,28 @@ input,textarea,select{font-family:inherit;font-size:14px;outline:none}
 .word-read-btn:hover{background:var(--orange-press)}
 .word-read-btn.reading{background:#D6321F}
 
+/* 拼读评分：必须在固定高度的舞台内一屏放下，所以分数用网格而不是
+   一行一个字母 */
+.spell-summary{margin-top:12px;text-align:center}
+.ss-head{display:flex;align-items:baseline;justify-content:center;gap:8px}
+.ss-score{font-size:34px;font-weight:600;color:var(--orange);line-height:1;
+  font-variant-numeric:tabular-nums}
+.ss-label{font-size:13px;color:var(--ink-2)}
+.sc-grid{display:flex;flex-wrap:wrap;gap:5px;justify-content:center;margin:10px 0}
+.sc-cell{min-width:30px;padding:4px 7px;border-radius:6px;font-size:14px;
+  font-weight:600;border:1px solid var(--line);color:var(--ink-3)}
+.sc-cell.ok{border-color:var(--orange);color:var(--orange-press);background:var(--orange-wash)}
+.sc-cell.bad{border-color:#D6321F;color:#D6321F;background:#FFF5F4}
+.sc-cell.done{border-color:var(--line);color:var(--ink)}
+.ss-actions{display:flex;gap:8px;justify-content:center;margin-top:8px}
+
+/* 连续读 */
+.cont-seq{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin:12px 0}
+.cont-item{padding:6px 10px;border-radius:8px;border:1px solid var(--line);
+  font-size:17px;font-weight:600;color:var(--ink)}
+.cont-item.ok{border-color:var(--orange);color:var(--orange-press);background:var(--orange-wash)}
+.cont-item.miss{border-color:var(--line);color:var(--ink-3)}
+
 /* 语音识别对比：逐词标记 */
 .align-sentence{font-size:19px;line-height:1.9;margin:4px 0 8px;word-spacing:2px}
 .w-ok{color:var(--ink)}
@@ -609,7 +631,7 @@ body.stage-mode .content-area{padding-block:0}
 <!-- Login Page -->
 <div id="login-page" class="login-page">
   <div class="login-box login-box-compact">
-    <div class="login-photo" style="margin-bottom:4px"><img src="photo.jpeg?v=36" alt="Amy老师英语打卡" width="56" height="56"></div>
+    <div class="login-photo" style="margin-bottom:4px"><img src="photo.jpeg?v=38" alt="Amy老师英语打卡" width="56" height="56"></div>
     <h2 style="font-size:18px;margin-bottom:2px">Amy老师英语打卡</h2>
     <p class="subtitle" style="font-size:12px;margin-bottom:14px">登录打卡，每天进步一点点</p>
     <div class="form-group" style="margin-bottom:10px">
@@ -635,7 +657,7 @@ body.stage-mode .content-area{padding-block:0}
 <!-- Waiting Page (for unapproved students) -->
 <div id="waiting-page" class="login-page hidden">
   <div class="login-box">
-    <div class="login-photo"><img src="photo.jpeg?v=36" alt="Amy老师英语打卡" width="56" height="56"></div>
+    <div class="login-photo"><img src="photo.jpeg?v=38" alt="Amy老师英语打卡" width="56" height="56"></div>
     <h2>等待老师审核</h2>
     <p class="subtitle">你的注册信息已提交</p>
     <div class="card" style="background:var(--warning-light);text-align:center;padding:20px;margin:16px 0">
@@ -667,7 +689,7 @@ body.stage-mode .content-area{padding-block:0}
       <nav class="navbar">
         <div class="nav-tabs" id="tab-bar"></div>
         <div class="nav-user">
-          <img id="header-photo" class="photo" src="photo.jpeg?v=36" alt="">
+          <img id="header-photo" class="photo" src="photo.jpeg?v=38" alt="">
           <span id="header-name">Amy老师英语打卡</span>
           <span class="class-badge" id="class-badge"></span>
           <button class="icon-btn" id="invite-btn-header" onclick="App.showInvite()" title="邀请" aria-label="邀请"><svg class="icon"><use href="#i-link"/></svg></button>
@@ -709,12 +731,12 @@ body.stage-mode .content-area{padding-block:0}
   <div class="modal" id="modal-box"></div>
 </div>
 
-<script src="cloud.js?v=36"></script>
-<script src="data.js?v=36"></script>
+<script src="cloud.js?v=38"></script>
+<script src="data.js?v=38"></script>
 <!-- api.js must load before app.js: app.js calls Api at init. -->
-<script src="recorder.js?v=36"></script>
-<script src="api.js?v=36"></script>
-<script src="app.js?v=36"></script>
+<script src="recorder.js?v=38"></script>
+<script src="api.js?v=38"></script>
+<script src="app.js?v=38"></script>
 <script>
 // Register Service Worker for PWA
 if ('serviceWorker' in navigator) {
