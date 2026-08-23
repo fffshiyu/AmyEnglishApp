@@ -51,10 +51,28 @@ async function transcribe(request, env) {
     return json({ error: 'bad_body' }, 400);
   }
 
+  // Letters and words need different handling: Whisper's language model
+  // happily reassembles spelled letters into a word ("K N O W L E D G E" came
+  // back as "KNOW LEDG"), so a spelling task gets a prompt that tells it what
+  // it is listening to. ?mode= lets the client pick; ?model= is for A/B tests.
+  const url = new URL(request.url);
+  const mode = url.searchParams.get('mode') || 'sentence';
+  const model = url.searchParams.get('model') === 'turbo'
+    ? '@cf/openai/whisper-large-v3-turbo' : MODEL;
+
+  const input = { audio: [...bytes] };
+  if (model !== MODEL) {
+    input.task = 'transcribe';
+    input.language = 'en';
+    if (mode === 'letter') {
+      input.initial_prompt = 'The speaker is reading single English alphabet letters aloud, one at a time.';
+    }
+  }
+
   try {
-    // Whisper wants raw bytes as a plain array, not base64.
-    const out = await env.AI.run(MODEL, { audio: [...bytes] });
+    const out = await env.AI.run(model, input);
     return json({
+      model: model,
       text: (out && out.text ? out.text : '').trim(),
       words: (out && out.words) || null,
       wordCount: (out && out.word_count) || null,

@@ -131,10 +131,29 @@ const Recorder = {
     const pcm = srcRate === this.TARGET_RATE ? flat : this._resample(flat, srcRate, this.TARGET_RATE);
     return {
       blob: this._encodeWav(pcm, this.TARGET_RATE),
+      // Raw samples come back too so several takes can be stitched into one
+      // clip later — concatenating PCM is exact, concatenating encoded WAV
+      // files is not (each carries its own 44-byte header).
+      samples: pcm,
       duration: pcm.length / this.TARGET_RATE,
       sampleRate: this.TARGET_RATE,
       peak: a.peak(),
     };
+  },
+
+  // Join takes into a single WAV, with a short gap so the words stay distinct.
+  join(sampleChunks, gapSeconds) {
+    const gap = Math.max(0, Math.round((gapSeconds === undefined ? 0.25 : gapSeconds) * this.TARGET_RATE));
+    const parts = sampleChunks.filter(Boolean);
+    if (!parts.length) return null;
+    const total = parts.reduce((n, p) => n + p.length, 0) + gap * (parts.length - 1);
+    const out = new Float32Array(total);
+    let off = 0;
+    parts.forEach((p, i) => {
+      out.set(p, off);
+      off += p.length + (i < parts.length - 1 ? gap : 0);
+    });
+    return { blob: this._encodeWav(out, this.TARGET_RATE), duration: total / this.TARGET_RATE };
   },
 
   // Linear interpolation is plenty for speech at these rates and keeps the

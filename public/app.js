@@ -403,7 +403,7 @@ const App = {
     // photo for a child.
     const headerPhoto = document.getElementById('header-photo');
     if (headerPhoto) {
-      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=25';
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=27';
       headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
@@ -2824,41 +2824,11 @@ const App = {
         if (w) w.style.display = 'none';
       });
     } else if (stage.type === 'letter_read') {
-      var letters = word.letters || word.word.split('');
-      html += '<div class="vocab-step-label">🔤 字母跟读</div>';
-      html += '<div class="vocab-emoji-card" style="width:100px;height:100px;font-size:52px">' + word.emoji + '</div>';
-      html += '<div class="vocab-word">' + word.word + '</div>';
-      html += '<div class="vocab-phonetic">' + word.phonetic + '</div>';
-      html += '<div class="read-instruction">点字母开始录，再点一次结束</div>';
-      html += '<div class="letter-read-container" id="letter-container-' + mi + '">';
-      for (var li = 0; li < letters.length; li++) {
-        html += '<div class="letter-box student-read" id="letter-' + mi + '-' + li + '" onclick="App._readLetter(' + mi + ',' + li + ',' + letters.length + ')">' + letters[li].toUpperCase() + '</div>';
-      }
-      html += '</div>';
-      html += '<button class="word-read-btn" id="word-read-btn-' + mi + '" onclick="App._readWholeWord(' + mi + ',\'' + word.word.replace(/'/g,"\\'") + '\',' + letters.length + ')">读整个单词：' + word.word + '</button>';
-      html += '<div id="letter-read-area-' + mi + '"></div>';
-      html += '<div id="letter-read-btn-' + mi + '" style="display:none;margin-top:12px">';
-      html += '<button class="vocab-btn" onclick="App.nextVocabStage(' + mi + ',' + dayIdx + ',' + m.words.length + ',' + word.stages.length + ')">我读好了 →</button>';
-      html += '</div>';
-      this._letterScores = {}; this._wordScore = {};
+      html += this._renderSpellRead(m, mi, dayIdx, word,
+        word.letters || word.word.split(''), 'letter');
     } else if (stage.type === 'syllable_blend') {
-      var syllables = word.syllables || [word.word];
-      html += '<div class="vocab-step-label">🎵 音标拼合</div>';
-      html += '<div class="vocab-emoji-card" style="width:100px;height:100px;font-size:52px">' + word.emoji + '</div>';
-      html += '<div class="vocab-word">' + word.word + ' ' + word.phonetic + '</div>';
-      html += '<div class="read-instruction">\u{1F446} \u70B9\u51FB\u97F3\u8282 \u2192 \u9EA6\u514B\u98CE\u5F55\u97F3 \u2192 \u81EA\u52A8\u8BC4\u5206\uFF08\u5171\u4E24\u8F6E\uFF0C\u65E0\u673A\u5668\u53D1\u97F3\uFF09</div>';
-      html += '<div class="read-round-badge" id="syllable-round-' + mi + '">第 1 轮</div>';
-      html += '<div class="syllable-container" id="syllable-container-' + mi + '">';
-      for (var si = 0; si < syllables.length; si++) {
-        html += '<div class="syllable-box student-read" id="syllable-' + mi + '-' + si + '" onclick="App._readSyllable(' + mi + ',' + si + ',' + syllables.length + ')">' + syllables[si] + '</div>';
-        if (si < syllables.length - 1) html += '<span class="syllable-sep">·</span>';
-      }
-      html += '</div>';
-      html += '<div id="syllable-read-area-' + mi + '"></div>';
-      html += '<div id="syllable-read-btn-' + mi + '" style="display:none;margin-top:12px">';
-      html += '<button class="vocab-btn" onclick="App.nextVocabStage(' + mi + ',' + dayIdx + ',' + m.words.length + ',' + word.stages.length + ')">我拼好了 →</button>';
-      html += '</div>';
-      this._syllableReadState = { round: 1, done: 0, total: syllables.length };
+      html += this._renderSpellRead(m, mi, dayIdx, word,
+        word.syllables || [word.word], 'syllable');
     } else if (stage.type === 'spell_fill') {
       // Multi-blank support: format like "di__co__r" or "b__autiful"
       var wordWithBlank = stage.prompt.split(': ').pop();
@@ -3026,51 +2996,178 @@ const App = {
     }
   },
 
-  // ====== Student Voice Recording (MediaRecorder + Web Audio API) ======
+  // ====== Student Voice Recording (Recorder -> 16kHz WAV -> Workers AI) ======
   // NO machine TTS — student records their own voice, system analyzes volume for auto-scoring
 
-  // Stop any ongoing recording (called before starting a new one)
-  _stopOngoingRecording() {
-    if (this._currentRecorder && this._currentRecorder.state === 'recording') {
-      try { this._currentRecorder.stop(); } catch(e) {}
-    }
-    if (this._currentStream) {
-      try { this._currentStream.getTracks().forEach(function(t) { t.stop(); }); } catch(e) {}
-      this._currentStream = null;
-    }
-    if (this._currentAudioCtx) {
-      try { this._currentAudioCtx.close(); } catch(e) {}
-      this._currentAudioCtx = null;
-    }
-    this._currentRecorder = null;
+  // Start recording a letter — NO machine audio, just microphone
+  // ===== Spell-then-say =====
+  // One implementation for every spelling exercise (letters, syllables, and
+  // anything added later): hold each piece to read it, hold the whole word,
+  // then hear the takes stitched together.
+  //
+  // Only the WHOLE WORD is recognised and scored. Individual letters are not:
+  // measured against real Whisper, isolated letters came back as "Capitoli"
+  // for E and "www." for W — 6 of 9 on "knowledge". Scoring them would fail
+  // children who read correctly, so the pieces are practice, not a test.
+  // Skipping recognition on them also means one upload per word, not ten.
+  _renderSpellRead(m, mi, dayIdx, word, units, kind) {
+    var self = this;
+    this._spell = { mi: mi, kind: kind, word: word.word, total: units.length,
+                    takes: {}, wordTake: null, score: null };
+
+    var html = '<div class="vocab-step-label">' + (kind === 'letter' ? '字母跟读' : '音节拼合') + '</div>';
+    html += '<div class="vocab-emoji-card" style="width:100px;height:100px;font-size:52px">' + word.emoji + '</div>';
+    html += '<div class="vocab-word">' + word.word + '</div>';
+    html += '<div class="vocab-phonetic">' + word.phonetic + '</div>';
+    html += '<div class="read-instruction">按住每个格子读，松开结束</div>';
+
+    html += '<div class="spell-row" id="spell-row-' + mi + '">';
+    units.forEach(function(u, i) {
+      html += '<div class="spell-box hold-target" id="spell-' + mi + '-' + i + '"'
+           + ' onpointerdown="App._readUnit(event,' + mi + ',' + i + ')"'
+           + ' onpointerup="App._holdEnd(event)" onpointercancel="App._holdEnd(event)"'
+           + ' oncontextmenu="return false">'
+           + (kind === 'letter' ? String(u).toUpperCase() : u) + '</div>';
+    });
+    // The whole word is just another box in the same row — same shape, wider.
+    html += '<div class="spell-box spell-word hold-target" id="spell-word-' + mi + '"'
+         + ' onpointerdown="App._readFullWord(event,' + mi + ')"'
+         + ' onpointerup="App._holdEnd(event)" onpointercancel="App._holdEnd(event)"'
+         + ' oncontextmenu="return false">' + word.word + '</div>';
+    html += '</div>';
+
+    html += '<div id="spell-status-' + mi + '"></div>';
+    html += '<div id="spell-result-area-' + mi + '"></div>';
+    html += '<div id="letter-read-btn-' + mi + '" style="display:none;margin-top:12px">';
+    html += '<button class="vocab-btn" onclick="App.nextVocabStage(' + mi + ',' + dayIdx + ',' + m.words.length + ',' + word.stages.length + ')">我读好了 →</button>';
+    html += '</div>';
+    return html;
   },
 
-  // Start recording a letter — NO machine audio, just microphone
-  // ===== Tap to record =====
-  // Tap once to start, tap again to stop — like a voice message. The old flow
-  // forced a fixed 3-second countdown on every single letter, so reading a
-  // 7-letter word meant sitting through 21 seconds of waiting.
-  //
-  // Everything routes through Recorder (16kHz WAV) and is judged by Workers AI,
-  // the same as the read-along.
-  _tapRecord(key, promptLabel, statusEl, onDone) {
+  _readUnit(ev, mi, idx) {
     var self = this;
-    // Second tap on the same target ends it.
-    if (this._tapKey === key) { this._endTapRecord(); return; }
-    if (this._tapKey) this._endTapRecord();
+    var el = document.getElementById('spell-' + mi + '-' + idx);
+    if (!el) return;
+    var label = el.textContent.trim();
+    var status = document.getElementById('spell-status-' + mi);
+    el.classList.add('reading');
+    this._holdStart(ev, 'unit-' + mi + '-' + idx, label, status, function(out) {
+      el.classList.remove('reading');
+      if (!out) return;
+      el.classList.add('read-done');
+      if (out.samples) self._spell.takes[idx] = out.samples;   // kept for the joined playback
+      if (status) status.innerHTML = '<div class="tap-result good">已录「' + label + '」</div>';
+      self._spellProgress(mi);
+    }, false);
+  },
 
-    this._tapKey = key;
-    this._tapDone = onDone;
-    this._tapStatusEl = statusEl;
+  async _readFullWord(ev, mi) {
+    var self = this;
+    var el = document.getElementById('spell-word-' + mi);
+    var status = document.getElementById('spell-status-' + mi);
+    var wordText = this._spell.word;
+    if (el) el.classList.add('reading');
+    this._holdStart(ev, 'word-' + mi, wordText, status, async function(out, text) {
+      if (el) el.classList.remove('reading');
+      if (!out) return;
+      if (el) el.classList.add('read-done');
+      var a = self.alignSpeech(wordText, text || '');
+      self._spell.wordTake = out.samples || null;
+      self._spell.score = a.score;
+      self._spell.heard = text;
+      if (status) {
+        status.innerHTML = '<div class="tap-result ' + (a.score >= 60 ? 'good' : 'bad') + '">'
+          + '整词 ' + a.score + ' 分'
+          + (text ? '<span class="tap-heard">识别：' + text + '</span>'
+                  : '<span class="tap-heard">没识别出内容</span>') + '</div>';
+      }
+      Api.submitSpeakingScore({
+        studentId: self._myStudentId(), dayIdx: self.state.currentDay,
+        moduleIdx: mi, itemIdx: 99, round: 1, type: 'word',
+        label: wordText, score: a.score, spoken: text, source: 'asr',
+      });
+      self._spellProgress(mi);
+    });
+  },
+
+  // Nothing advances on its own — the child decides when to finish.
+  _spellProgress(mi) {
+    var sp = this._spell;
+    var done = Object.keys(sp.takes).length;
+    var area = document.getElementById('spell-result-area-' + mi);
+    if (!area) return;
+    if (done >= sp.total && sp.wordTake) {
+      area.innerHTML = '<button class="word-read-btn" onclick="App._finishSpell(' + mi + ')">听一遍并查看评分</button>';
+    } else {
+      area.innerHTML = '<div class="fs-12 text-sub">已读 ' + done + '/' + sp.total
+        + (sp.wordTake ? '，整词已读' : '，整词未读') + '</div>';
+    }
+  },
+
+  // Stitch every take into one clip so the child hears the pieces then the
+  // whole word in sequence, and show the word score.
+  _finishSpell(mi) {
+    var sp = this._spell;
+    var area = document.getElementById('spell-result-area-' + mi);
+    var chunks = [];
+    for (var i = 0; i < sp.total; i++) if (sp.takes[i]) chunks.push(sp.takes[i]);
+    if (sp.wordTake) chunks.push(sp.wordTake);
+    var joined = Recorder.join(chunks, 0.25);
+
+    var html = '<div class="letter-comprehensive">';
+    html += '<div class="lc-label">' + sp.word + '</div>';
+    html += '<div class="lc-score">' + (sp.score === null ? '-' : sp.score) + '</div>';
+    html += '<div class="fs-12 text-sub">整词得分</div>';
+    if (joined) {
+      html += '<div class="mt-8"><div class="fs-12 text-sub mb-4">你的朗读（逐个 + 整词）</div>'
+           + '<audio controls src="' + URL.createObjectURL(joined.blob)
+           + '" style="width:100%;max-width:300px;height:34px"></audio></div>';
+    }
+    html += '<p class="fs-12 text-sub mt-8">只对整词发音评分；单个字母/音节仅练习，不计分。</p>';
+    html += '</div>';
+    if (area) area.innerHTML = html;
+
+    // Keep the joined clip so the teacher can hear it too.
+    if (joined) {
+      Api.uploadRecording(joined.blob, {
+        studentId: this._myStudentId(), dayIdx: this.state.currentDay,
+        moduleIdx: mi, itemIdx: 98, round: 1, type: 'spell',
+        label: sp.word, score: sp.score,
+      }).catch(function(){});
+    }
+    var btn = document.getElementById('letter-read-btn-' + mi);
+    if (btn) btn.style.display = 'block';
+    this._playCelebrate();
+  },
+
+  // ===== Press and hold to record =====
+  // Hold to speak, release to stop — the gesture from a voice message. Pointer
+  // events (not mouse/touch pairs) so one code path covers finger, pen and
+  // mouse, and setPointerCapture so releasing outside the button still ends
+  // the recording instead of leaving the mic open.
+  _holdStart(ev, key, promptLabel, statusEl, onDone, needsTranscript) {
+    if (ev) {
+      ev.preventDefault();
+      if (ev.pointerId !== undefined && ev.currentTarget.setPointerCapture) {
+        try { ev.currentTarget.setPointerCapture(ev.pointerId); } catch (e) {}
+      }
+    }
+    if (this._holdKey) return;                 // already recording something
+    var self = this;
+    this._holdKey = key;
+    this._holdDone = onDone;
+    this._holdNeedsTranscript = needsTranscript !== false;
+    this._holdStatusEl = statusEl;
+    this._holdStartedAt = Date.now();
 
     var setStatus = function(html) { if (statusEl) statusEl.innerHTML = html; };
     setStatus('<div class="tap-rec"><span class="tap-dot"></span>正在录「' + promptLabel + '」'
-            + '<span class="tap-hint">再点一次结束</span>'
+            + '<span class="tap-hint">松开结束</span>'
             + '<div class="rec-wave"><div class="rec-wave-bar" id="tap-wave" style="width:0%"></div></div></div>');
 
     if (!Recorder.supported()) {
-      setStatus('<div class="fs-12" style="color:#D6321F">此浏览器不支持录音</div>');
-      this._tapKey = null;
+      setStatus('<div class="tap-result bad">此浏览器不支持录音</div>');
+      this._holdKey = null;
       return;
     }
 
@@ -3079,464 +3176,43 @@ const App = {
         var bar = document.getElementById('tap-wave');
         if (bar) bar.style.width = Math.min(100, Math.round(v * 140)) + '%';
       }
-    }).catch(function(e) {
-      setStatus('<div class="fs-12" style="color:#D6321F">无法访问麦克风，请允许权限</div>');
-      self._tapKey = null;
+    }).catch(function() {
+      setStatus('<div class="tap-result bad">无法访问麦克风，请允许权限</div>');
+      self._holdKey = null;
     });
 
-    // Never leave the mic open if the child wanders off.
-    clearTimeout(this._tapCap);
-    this._tapCap = setTimeout(function() { self._endTapRecord(); }, 15000);
+    clearTimeout(this._holdCap);
+    this._holdCap = setTimeout(function() { self._holdEnd(); }, 15000);
   },
 
-  async _endTapRecord() {
-    var key = this._tapKey, onDone = this._tapDone, statusEl = this._tapStatusEl;
-    this._tapKey = null; this._tapDone = null;
-    clearTimeout(this._tapCap);
+  async _holdEnd(ev) {
+    if (ev) ev.preventDefault();
+    var key = this._holdKey, onDone = this._holdDone, statusEl = this._holdStatusEl;
+    var needs = this._holdNeedsTranscript;
+    var heldMs = Date.now() - (this._holdStartedAt || 0);
+    this._holdKey = null; this._holdDone = null;
+    clearTimeout(this._holdCap);
     if (!key) return;
 
-    if (statusEl) statusEl.innerHTML = '<div class="tap-rec"><span class="tap-spin"></span>正在识别…</div>';
+    // A stray tap is not an attempt — drop it rather than scoring silence.
+    if (heldMs < 350) {
+      try { await Recorder.stop(); } catch (e) {}
+      if (statusEl) statusEl.innerHTML = '<div class="tap-result bad">按住不放才能录音</div>';
+      return;
+    }
+
+    if (statusEl && needs) statusEl.innerHTML = '<div class="tap-rec"><span class="tap-spin"></span>正在识别…</div>';
     var out = null;
-    try { out = await Recorder.stop(); } catch (e) { console.warn('tap stop failed', e); }
+    try { out = await Recorder.stop(); } catch (e) { console.warn('hold stop failed', e); }
     if (!out || !out.blob) {
-      if (statusEl) statusEl.innerHTML = '<div class="fs-12 text-sub">没有录到声音，再试一次</div>';
+      if (statusEl) statusEl.innerHTML = '<div class="tap-result bad">没有录到声音，再按住试一次</div>';
       if (onDone) onDone(null, null);
       return;
     }
+    // Pieces of a word are practice, not a test — no upload, no recognition.
+    if (!needs) { if (onDone) onDone(out, null); return; }
     var res = await Api.transcribe(out.blob, null);
     if (onDone) onDone(out, res && res.text ? res.text : null);
-  },
-
-  // Whisper hears a spoken letter as its NAME, not its character: "M" comes
-  // back as "em" or "M", "R" as "are". Accept the character, the name, and the
-  // handful of homophones that show up in practice.
-  LETTER_NAMES: {
-    a:['a','ay','eh'], b:['b','bee','be'], c:['c','see','sea'], d:['d','dee'],
-    e:['e','ee'], f:['f','ef','eff'], g:['g','gee','jee'], h:['h','aitch','aych','h.'],
-    i:['i','eye','aye'], j:['j','jay'], k:['k','kay','okay'], l:['l','el','ell'],
-    m:['m','em'], n:['n','en'], o:['o','oh','owe'], p:['p','pee','pea'],
-    q:['q','cue','queue'], r:['r','are','ar'], s:['s','es','ess'], t:['t','tee','tea'],
-    u:['u','you','yoo'], v:['v','vee'], w:['w','double u','double you','dubya'],
-    x:['x','ex','eks'], y:['y','why','wye'], z:['z','zee','zed'],
-  },
-
-  _gradeLetter(expected, transcript) {
-    if (!transcript) return { ok: false, heard: null };
-    var want = String(expected).toLowerCase().trim();
-    var heard = String(transcript).toLowerCase().replace(/[^a-z\s]/g, ' ').trim();
-    var names = this.LETTER_NAMES[want] || [want];
-    var tokens = heard.split(/\s+/).filter(Boolean);
-    var hit = names.some(function(n) {
-      return n.indexOf(' ') >= 0 ? heard.indexOf(n) >= 0 : tokens.indexOf(n) >= 0;
-    });
-    return { ok: hit, heard: transcript };
-  },
-
-  _readLetter(mi, ci, total) {
-    var el = document.getElementById('letter-' + mi + '-' + ci);
-    if (!el) return;
-    var self = this;
-    var letter = el.textContent.trim();
-    var area = document.getElementById('letter-read-area-' + mi);
-    var reading = document.querySelectorAll('#letter-container-' + mi + ' .letter-box.reading');
-    reading.forEach(function(l) { l.classList.remove('reading'); });
-
-    if (this._tapKey === 'letter-' + mi + '-' + ci) { this._endTapRecord(); return; }
-    el.classList.add('reading');
-
-    this._tapRecord('letter-' + mi + '-' + ci, letter, area, function(out, text) {
-      el.classList.remove('reading');
-      if (!out) return;
-      var g = self._gradeLetter(letter, text);
-      if (!self._letterScores) self._letterScores = {};
-      self._letterScores[mi + '-' + ci] = { ok: g.ok, heard: g.heard, letter: letter };
-      // Recognised or not, the letter counts as read. Single-letter ASR is
-      // measured-unreliable (Whisper returned "Capitoli" for a spoken E), so
-      // marking it wrong would fail children who read it correctly.
-      el.classList.add('read-done');
-      if (area) {
-        area.innerHTML = '<div class="tap-result good">'
-          + (g.ok ? '听到了：' + letter : '这个字母没听清，继续下一个')
-          + (g.heard ? '<span class="tap-heard">识别：' + g.heard + '</span>' : '')
-          + '</div>';
-      }
-      Api.submitSpeakingScore({
-        studentId: self._myStudentId(), dayIdx: self.state.currentDay,
-        moduleIdx: mi, itemIdx: ci, round: 1, type: 'letter',
-        label: letter, score: g.ok ? 100 : 0, spoken: g.heard, source: 'asr',
-      });
-      self._afterLetterRead(mi, total);
-    });
-  },
-
-  // Whole-word reading — the button the letters build up to.
-  _readWholeWord(mi, word, total) {
-    var self = this;
-    var area = document.getElementById('letter-read-area-' + mi);
-    var btn = document.getElementById('word-read-btn-' + mi);
-
-    if (this._tapKey === 'word-' + mi) { this._endTapRecord(); return; }
-    if (btn) btn.classList.add('reading');
-
-    this._tapRecord('word-' + mi, word, area, function(out, text) {
-      if (btn) btn.classList.remove('reading');
-      if (!out) return;
-      var a = self.alignSpeech(word, text || '');
-      self._wordScore = self._wordScore || {};
-      self._wordScore[mi] = { score: a.score, heard: text, ok: a.ok, total: a.total };
-      if (area) {
-        area.innerHTML = '<div class="tap-result ' + (a.score >= 60 ? 'good' : 'bad') + '">'
-          + '整词 ' + a.score + ' 分'
-          + (text ? '<span class="tap-heard">识别：' + text + '</span>' : '<span class="tap-heard">没识别出内容</span>')
-          + '</div>';
-      }
-      Api.submitSpeakingScore({
-        studentId: self._myStudentId(), dayIdx: self.state.currentDay,
-        moduleIdx: mi, itemIdx: 99, round: 1, type: 'word',
-        label: word, score: a.score, spoken: text, source: 'asr',
-      });
-      self._afterLetterRead(mi, total);
-    });
-  },
-
-  // Show the summary once every letter has been tried and the word is done.
-  _afterLetterRead(mi, total) {
-    var done = 0;
-    for (var i = 0; i < total; i++) if (this._letterScores && this._letterScores[mi + '-' + i]) done++;
-    var wordDone = this._wordScore && this._wordScore[mi];
-    if (done >= total && wordDone) {
-      var self = this;
-      setTimeout(function() { self._showLetterComprehensive(mi, total); }, 600);
-    }
-  },
-
-  // Start recording a syllable — NO machine audio (removed this.speak())
-  _readSyllable(mi, si, total) {
-    var el = document.getElementById('syllable-' + mi + '-' + si);
-    if (!el || el.classList.contains('read-done') || el.classList.contains('reading')) return;
-    this._stopOngoingRecording();
-    var reading = document.querySelectorAll('#syllable-container-' + mi + ' .syllable-box.reading');
-    reading.forEach(function(s) { s.classList.remove('reading'); });
-    el.classList.add('reading');
-    var area = document.getElementById('syllable-read-area-' + mi);
-    this._startRecording(el, area, 'syllable', mi, si, total);
-  },
-
-  // Shared recording function using MediaRecorder API
-  _startRecording(el, area, type, mi, idx, total) {
-    var self = this;
-    var label = el.textContent;
-    var prefix = type === 'letter' ? 'letter' : 'syllable';
-
-    // Show recording UI — microphone icon + countdown + wave
-    area.innerHTML = '<div class="letter-rec-area">' +
-      '<div class="letter-rec-mic">\u{1F3A4}</div>' +
-      '<div class="letter-rec-label">\u6B63\u5728\u5F55\u97F3 \u2014 \u8BF7\u5927\u58F0\u8BFB\u51FA ' + label + '</div>' +
-      '<div class="rec-timer" id="rt-' + prefix + '-' + mi + '-' + idx + '">3</div>' +
-      '<div class="rec-wave"><div class="rec-wave-bar" id="rw-' + prefix + '-' + mi + '-' + idx + '" style="width:0%"></div></div>' +
-      '</div>';
-
-    // Check browser support for MediaRecorder
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
-      self._showMicError(el, area, type, mi, idx, total, '\u6D4F\u89C8\u5668\u4E0D\u652F\u6301\u5F55\u97F3\u529F\u80FD');
-      return;
-    }
-
-    navigator.mediaDevices.getUserMedia({ audio: true })
-      .then(function(stream) {
-        self._doRecord(el, area, type, mi, idx, total, stream, label);
-      })
-      .catch(function(err) {
-        self._showMicError(el, area, type, mi, idx, total, '\u65E0\u6CD5\u8BBF\u95EE\u9EA6\u514B\u98CE\uFF0C\u8BF7\u5141\u8BB8\u6743\u9650');
-      });
-  },
-
-  // Show microphone error with retry button
-  _showMicError(el, area, type, mi, idx, total, msg) {
-    el.classList.remove('reading');
-    var retryFn = type === 'letter' ? '_retryLetter' : '_retrySyllable';
-    area.innerHTML = '<div style="text-align:center;margin-top:12px">' +
-      '<div style="color:var(--danger);font-size:14px;margin-bottom:8px">\u26A0\uFE0F ' + msg + '</div>' +
-      '<div style="font-size:12px;color:var(--text-sub);margin-bottom:8px">\u8BF7\u4F7F\u7528 Chrome \u6216 Safari \u6D4F\u89C8\u5668\uFF0C\u5E76\u70B9\u51FB\u5730\u5740\u5141\u8BB8\u9EA6\u514B\u98CE\u6743\u9650</div>' +
-      '<button class="letter-retry-btn" onclick="App.' + retryFn + '(' + mi + ',' + idx + ',' + total + ')">\u{1F3A4} \u91CD\u8BD5</button>' +
-      '</div>';
-  },
-
-  // Actual recording with MediaRecorder + Web Audio API volume analysis
-  _doRecord(el, area, type, mi, idx, total, stream, label) {
-    var self = this;
-    var prefix = type === 'letter' ? 'letter' : 'syllable';
-
-    // Create AudioContext for volume analysis
-    var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioCtx.state === 'suspended') {
-      audioCtx.resume();
-    }
-    var source = audioCtx.createMediaStreamSource(stream);
-    var analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 256;
-    analyser.smoothingTimeConstant = 0.3;
-    source.connect(analyser);
-
-    // Store for cleanup
-    self._currentRecorder = null;
-    self._currentStream = stream;
-    self._currentAudioCtx = audioCtx;
-
-    var recorder = new MediaRecorder(stream);
-    self._currentRecorder = recorder;
-    var chunks = [];
-    var maxVol = 0;
-    var volSum = 0;
-    var samples = 0;
-    var dataArr = new Uint8Array(analyser.frequencyBinCount);
-
-    var waveEl = document.getElementById('rw-' + prefix + '-' + mi + '-' + idx);
-    var timerEl = document.getElementById('rt-' + prefix + '-' + mi + '-' + idx);
-
-    // Monitor volume every 50ms during recording
-    var volTimer = setInterval(function() {
-      analyser.getByteFrequencyData(dataArr);
-      var sum = 0;
-      for (var i = 0; i < dataArr.length; i++) sum += dataArr[i];
-      var avg = sum / dataArr.length;
-      if (avg > maxVol) maxVol = avg;
-      volSum += avg;
-      samples++;
-      // Update wave bar visualization
-      if (waveEl) {
-        waveEl.style.width = Math.min(100, Math.round(avg * 3)) + '%';
-      }
-    }, 50);
-
-    recorder.ondataavailable = function(e) {
-      if (e.data.size > 0) chunks.push(e.data);
-    };
-
-    recorder.onstop = function() {
-      clearInterval(volTimer);
-      // Clean up stream and audio context
-      stream.getTracks().forEach(function(t) { t.stop(); });
-      try { audioCtx.close(); } catch(e) {}
-      self._currentRecorder = null;
-      self._currentStream = null;
-      self._currentAudioCtx = null;
-
-      // Determine if student actually spoke (volume threshold)
-      var spoke = maxVol > 12;
-
-      if (spoke) {
-        // Success — create audio playback + score
-        var blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
-        var audioUrl = URL.createObjectURL(blob);
-        // NOTE: still a pure volume mapping, not pronunciation assessment.
-        // What changes here is that the clip and score now get persisted.
-        var score = Math.min(100, Math.round(55 + maxVol * 1.5));
-        var round = type === 'letter'
-          ? (self._letterReadState ? self._letterReadState.round : 1)
-          : (self._syllableReadState ? self._syllableReadState.round : 1);
-
-        el.classList.remove('reading');
-        el.classList.add('read-done');
-        self._playCorrectSound();
-
-        // Store score
-        if (type === 'letter') {
-          if (!self._letterScores) self._letterScores = {};
-          self._letterScores[mi + '-' + idx + '-' + round] = score;
-        } else {
-          if (!self._syllableScores) self._syllableScores = {};
-          self._syllableScores[mi + '-' + idx + '-' + round] = score;
-        }
-
-        // Persist clip + score. The blob used to die with the tab.
-        var recMeta = {
-          studentId: self._myStudentId(),
-          dayIdx: self.state.currentDay,
-          moduleIdx: mi, itemIdx: idx, round: round,
-          type: type, label: label, score: score
-        };
-        Api.uploadRecording(blob, recMeta).then(function(saved) {
-          return Api.submitSpeakingScore(Object.assign({ clipId: saved.id }, recMeta));
-        }).catch(function(e) { console.warn('Recording persist failed:', e); });
-
-        // Show success with audio playback
-        area.innerHTML = '<div style="text-align:center;margin-top:8px">' +
-          '<span class="letter-score-badge pass">\u2705 \u5F55\u97F3\u6210\u529F\uFF01' + label + '\uFF08' + score + '\u5206\uFF09</span>' +
-          '<audio controls src="' + audioUrl + '" style="width:100%;max-width:280px;margin-top:8px;height:32px"></audio>' +
-          '</div>';
-
-        if (type === 'letter') {
-          self._advanceLetterRead(mi, idx, total, area);
-        } else {
-          self._advanceSyllableRead(mi, idx, total, area);
-        }
-      } else {
-        // No voice detected — must retry
-        self._playWrongSound();
-        el.classList.remove('reading');
-        var retryFn = type === 'letter' ? '_retryLetter' : '_retrySyllable';
-        area.innerHTML = '<div style="text-align:center;margin-top:8px">' +
-          '<span class="letter-score-badge fail">\u274C \u6CA1\u6709\u68C0\u6D4B\u5230\u58F0\u97F3</span>' +
-          '<div style="font-size:13px;color:var(--text-sub);margin:8px 0">\u8BF7\u5927\u58F0\u8BFB\u51FA ' + label + '</div>' +
-          '<button class="letter-retry-btn" onclick="App.' + retryFn + '(' + mi + ',' + idx + ',' + total + ')">\u{1F3A4} \u91CD\u65B0\u8BFB</button>' +
-          '</div>';
-      }
-    };
-
-    // Start recording
-    recorder.start();
-
-    // 3-second countdown, then auto-stop
-    var timeLeft = 3;
-    var countdown = setInterval(function() {
-      timeLeft--;
-      if (timerEl) timerEl.textContent = timeLeft > 0 ? String(timeLeft) : '\u2713';
-      if (timeLeft <= 0) {
-        clearInterval(countdown);
-        if (recorder.state === 'recording') {
-          recorder.stop();
-        }
-      }
-    }, 1000);
-  },
-
-  // Retry letter reading
-  _retryLetter(mi, ci, total) {
-    var el = document.getElementById('letter-' + mi + '-' + ci);
-    if (el) el.classList.remove('read-done', 'reading');
-    this._readLetter(mi, ci, total);
-  },
-
-  // Retry syllable reading
-  _retrySyllable(mi, si, total) {
-    var el = document.getElementById('syllable-' + mi + '-' + si);
-    if (el) el.classList.remove('read-done', 'reading');
-    this._readSyllable(mi, si, total);
-  },
-
-  // Advance to next letter or next round
-  _advanceLetterRead(mi, ci, total, area) {
-    if (!this._letterReadState) this._letterReadState = { round: 1, done: 0, total: total };
-    this._letterReadState.done++;
-    var state = this._letterReadState;
-    var self = this;
-    if (state.done >= total) {
-      if (state.round === 1) {
-        state.round = 2;
-        state.done = 0;
-        setTimeout(function() {
-          var badge = document.getElementById('letter-round-' + mi);
-          if (badge) badge.textContent = '\u7B2C 2 \u8F6E';
-          var letters = document.querySelectorAll('#letter-container-' + mi + ' .letter-box');
-          letters.forEach(function(l) { l.classList.remove('read-done'); });
-          if (area) area.innerHTML = '<div style="color:var(--primary);font-size:13px;margin-top:8px">\u2705 \u7B2C1\u8F6E\u5B8C\u6210\uFF01\u5F00\u59CB\u7B2C2\u8F6E \u2014 \u70B9\u51FB\u5B57\u6BCD\u5F00\u59CB\u6717\u8BFB</div>';
-        }, 800);
-      } else {
-        setTimeout(function() {
-          self._showLetterComprehensive(mi, total);
-        }, 800);
-      }
-    }
-  },
-
-  // Show comprehensive letter reading score
-  _showLetterComprehensive(mi, total) {
-    var self = this;
-    var area = document.getElementById('letter-read-area-' + mi);
-    var btn = document.getElementById('letter-read-btn-' + mi);
-    var scores = this._letterScores || {};
-    var wordRes = (this._wordScore || {})[mi] || { score: 0, heard: null };
-
-    var rows = '', okCount = 0;
-    for (var i = 0; i < total; i++) {
-      var r = scores[mi + '-' + i];
-      if (r && r.ok) okCount++;
-      rows += '<div class="letter-detail-row">'
-        + '<span class="ldr-letter">' + (r ? r.letter : '-') + '</span>'
-        + '<span class="ldr-score" style="color:var(--ink-3)">'
-        + (r ? (r.ok ? '认出' : '没听清') : '未读') + '</span></div>';
-    }
-
-    // The score IS the whole-word score. Isolated letters were measured
-    // against real Whisper and it missed 2 of 7 (E came back as "Capitoli"),
-    // so letting them move the number would just add noise — they are shown
-    // for reference only.
-    var overall = wordRes.score;
-
-    if (area) {
-      area.innerHTML = '<div class="letter-comprehensive">'
-        + '<div class="lc-label">综合评分</div>'
-        + '<div class="lc-score">' + overall + '</div>'
-        + '<div class="fs-12 text-sub">整词得分 · 字母认出 ' + okCount + '/' + total + ' 仅供参考</div>'
-        + '<div style="margin:12px 0;text-align:left">' + rows + '</div>'
-        + '<p class="fs-12 text-sub">分数来自语音识别比对，不代表发音准确度；单字母识别不稳定，未计入。</p>'
-        + '</div>';
-    }
-    if (btn) btn.style.display = 'block';
-    this._playCelebrate();
-  },
-
-  // Advance to next syllable or next round
-  _advanceSyllableRead(mi, si, total, area) {
-    if (!this._syllableReadState) this._syllableReadState = { round: 1, done: 0, total: total };
-    this._syllableReadState.done++;
-    var state = this._syllableReadState;
-    var self = this;
-    if (state.done >= total) {
-      if (state.round === 1) {
-        state.round = 2;
-        state.done = 0;
-        setTimeout(function() {
-          var badge = document.getElementById('syllable-round-' + mi);
-          if (badge) badge.textContent = '\u7B2C 2 \u8F6E';
-          var syls = document.querySelectorAll('#syllable-container-' + mi + ' .syllable-box');
-          syls.forEach(function(s) { s.classList.remove('read-done'); });
-          if (area) area.innerHTML = '<div style="color:var(--primary);font-size:13px;margin-top:8px">\u2705 \u7B2C1\u8F6E\u5B8C\u6210\uFF01\u5F00\u59CB\u7B2C2\u8F6E \u2014 \u70B9\u51FB\u97F3\u8282\u5F00\u59CB\u6717\u8BFB</div>';
-        }, 800);
-      } else {
-        setTimeout(function() {
-          self._showSyllableComprehensive(mi, total);
-        }, 800);
-      }
-    }
-  },
-
-  // Show comprehensive syllable reading score
-  _showSyllableComprehensive(mi, total) {
-    var self = this;
-    var area = document.getElementById('syllable-read-area-' + mi);
-    var btn = document.getElementById('syllable-read-btn-' + mi);
-    if (!this._syllableScores) this._syllableScores = {};
-    var allScores = [];
-    var sylRows = '';
-    var syls = document.querySelectorAll('#syllable-container-' + mi + ' .syllable-box');
-    syls.forEach(function(el, idx) {
-      var sylChar = el.textContent;
-      var s1 = self._syllableScores[mi + '-' + idx + '-1'] || 0;
-      var s2 = self._syllableScores[mi + '-' + idx + '-2'] || 0;
-      var avg = Math.round((s1 + s2) / 2);
-      allScores.push(avg);
-      sylRows += '<div class="letter-detail-row">' +
-        '<span class="ldr-letter">' + sylChar + '</span>' +
-        '<span class="ldr-score" style="color:' + (avg >= 60 ? 'var(--success)' : 'var(--danger)') + '">' + avg + '\u5206</span>' +
-        '</div>';
-    });
-    var overall = allScores.length > 0 ? Math.round(allScores.reduce(function(a,b){return a+b;},0) / allScores.length) : 0;
-    var stars = '';
-    for (var i = 0; i < 5; i++) {
-      stars += i < Math.round(overall / 20) ? '\u2B50' : '\u2606';
-    }
-    if (area) {
-      area.innerHTML = '<div class="letter-comprehensive">' +
-        '<div class="lc-label">\u97F3\u6807\u62FC\u5408\u7EFC\u5408\u8BC4\u5206</div>' +
-        '<div class="lc-score">' + overall + '</div>' +
-        '<div class="lc-stars">' + stars + '</div>' +
-        '<div style="margin:12px 0;text-align:left">' + sylRows + '</div>' +
-        '</div>';
-    }
-    if (btn) btn.style.display = 'block';
-    this._playCelebrate();
   },
 
   // Writing template
@@ -4075,7 +3751,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder"><img src="photo.jpeg?v=25" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=27" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>

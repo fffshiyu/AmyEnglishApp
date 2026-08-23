@@ -114,6 +114,24 @@ input,textarea,select{font-family:inherit;font-size:14px;outline:none}
 .tap-result.bad{color:#D6321F}
 .tap-heard{display:block;font-size:12px;font-weight:400;color:var(--ink-3);margin-top:3px}
 .letter-box.read-miss{border-color:#D6321F;color:#D6321F}
+/* 按住录音：长按不能选中文字、不能弹出系统菜单、不能触发页面滚动 */
+.hold-target{touch-action:none;-webkit-user-select:none;user-select:none;
+  -webkit-touch-callout:none;cursor:pointer}
+.hold-target.reading{background:#D6321F;color:#fff;border-color:#D6321F}
+
+/* 拼读：每个格子一个音，整词也是同一种格子，只是宽一些 */
+.spell-row{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:14px 0}
+.spell-box{min-width:52px;padding:12px 14px;border-radius:var(--radius-sm);
+  border:1.5px solid var(--line);background:var(--surface);color:var(--ink);
+  font-size:22px;font-weight:600;text-align:center;line-height:1.2;
+  transition:background var(--fast) var(--ease),border-color var(--fast) var(--ease)}
+.spell-box.read-done{border-color:var(--orange);color:var(--orange-press);
+  background:var(--orange-wash)}
+.spell-word{flex-basis:100%;font-size:24px;letter-spacing:.5px}
+@media(max-width:768px){
+  .spell-box{min-width:44px;padding:10px 11px;font-size:19px}
+  .spell-word{font-size:21px}
+}
 .word-read-btn{display:block;margin:14px auto 0;padding:11px 22px;border-radius:var(--radius-pill);
   background:var(--orange);color:#fff;font-size:15px;font-weight:500;max-width:100%}
 .word-read-btn:hover{background:var(--orange-press)}
@@ -587,7 +605,7 @@ body.stage-mode .content-area{padding-block:0}
 <!-- Login Page -->
 <div id="login-page" class="login-page">
   <div class="login-box login-box-compact">
-    <div class="login-photo" style="margin-bottom:4px"><img src="photo.jpeg?v=25" alt="Amy老师英语打卡" width="56" height="56"></div>
+    <div class="login-photo" style="margin-bottom:4px"><img src="photo.jpeg?v=27" alt="Amy老师英语打卡" width="56" height="56"></div>
     <h2 style="font-size:18px;margin-bottom:2px">Amy老师英语打卡</h2>
     <p class="subtitle" style="font-size:12px;margin-bottom:14px">登录打卡，每天进步一点点</p>
     <div class="form-group" style="margin-bottom:10px">
@@ -613,7 +631,7 @@ body.stage-mode .content-area{padding-block:0}
 <!-- Waiting Page (for unapproved students) -->
 <div id="waiting-page" class="login-page hidden">
   <div class="login-box">
-    <div class="login-photo"><img src="photo.jpeg?v=25" alt="Amy老师英语打卡" width="56" height="56"></div>
+    <div class="login-photo"><img src="photo.jpeg?v=27" alt="Amy老师英语打卡" width="56" height="56"></div>
     <h2>等待老师审核</h2>
     <p class="subtitle">你的注册信息已提交</p>
     <div class="card" style="background:var(--warning-light);text-align:center;padding:20px;margin:16px 0">
@@ -645,7 +663,7 @@ body.stage-mode .content-area{padding-block:0}
       <nav class="navbar">
         <div class="nav-tabs" id="tab-bar"></div>
         <div class="nav-user">
-          <img id="header-photo" class="photo" src="photo.jpeg?v=25" alt="">
+          <img id="header-photo" class="photo" src="photo.jpeg?v=27" alt="">
           <span id="header-name">Amy老师英语打卡</span>
           <span class="class-badge" id="class-badge"></span>
           <button class="icon-btn" id="invite-btn-header" onclick="App.showInvite()" title="邀请" aria-label="邀请"><svg class="icon"><use href="#i-link"/></svg></button>
@@ -687,12 +705,12 @@ body.stage-mode .content-area{padding-block:0}
   <div class="modal" id="modal-box"></div>
 </div>
 
-<script src="cloud.js?v=25"></script>
-<script src="data.js?v=25"></script>
+<script src="cloud.js?v=27"></script>
+<script src="data.js?v=27"></script>
 <!-- api.js must load before app.js: app.js calls Api at init. -->
-<script src="recorder.js?v=25"></script>
-<script src="api.js?v=25"></script>
-<script src="app.js?v=25"></script>
+<script src="recorder.js?v=27"></script>
+<script src="api.js?v=27"></script>
+<script src="app.js?v=27"></script>
 <script>
 // Register Service Worker for PWA
 if ('serviceWorker' in navigator) {
