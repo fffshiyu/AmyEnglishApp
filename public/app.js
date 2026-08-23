@@ -38,6 +38,11 @@ const App = {
     // or a user gesture — this covers the "opened app but never tapped"
     // case on WeChat.
     this._setupWeChatAudioUnlock();
+    // Attach the one-time unlock on EVERY path, not just auto-login. Browsers
+    // only allow playback after a user gesture; with the 「开启语音」 screen
+    // gone, the first tap anywhere has to be what unlocks it — otherwise the
+    // sentence auto-read is called but never actually heard.
+    this._setupAudioUnlock();
     // Show WeChat notice if in WeChat
     if (this.isWeChat()) {
       const notice = document.getElementById('wechat-notice');
@@ -136,6 +141,14 @@ const App = {
       // Remove listeners
       document.removeEventListener('touchstart', unlockHandler);
       document.removeEventListener('click', unlockHandler);
+      // Anything queued before the unlock (the sentence the child just landed
+      // on) gets played now instead of being lost.
+      if (self._pendingSpeak) {
+        var pending = self._pendingSpeak;
+        self._pendingSpeak = null;
+        self.speak(pending);
+        return;
+      }
       // Re-render content so auto-speak can now work with unlocked audio
       if (self.state.phone) {
         self.renderContent();
@@ -403,7 +416,7 @@ const App = {
     // photo for a child.
     const headerPhoto = document.getElementById('header-photo');
     if (headerPhoto) {
-      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=43';
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=45';
       headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
@@ -3091,9 +3104,13 @@ const App = {
     html += '</div>';
 
     // Play it once on arrival so the child hears the model without hunting
-    // for a button.
+    // for a button. If audio has not been unlocked yet, park it — the first
+    // tap will release it rather than swallowing this sentence.
     const self = this;
-    setTimeout(function() { self.speak(sent); }, 250);
+    setTimeout(function() {
+      if (self._ttsUnlocked) self.speak(sent);
+      else self._pendingSpeak = sent;
+    }, 250);
     return html;
   },
 
@@ -3134,6 +3151,11 @@ const App = {
 
       const audio = document.getElementById('sent-audio-' + mi + '-' + si);
       if (audio) { const p = audio.play(); if (p && p.catch) p.catch(function(){}); }
+
+      // This sentence is done — draw the eye to the button that moves on,
+      // otherwise children sit and wait for something to happen.
+      const nextBtn = document.getElementById('stage-next-btn');
+      if (nextBtn) nextBtn.classList.add('nudge');
 
       Api.submitSpeakingScore({
         studentId: self._myStudentId(), dayIdx: self.state.currentDay,
@@ -3876,7 +3898,14 @@ const App = {
     if (step.kind === 'vocab') {
       html += '<button class="btn-ghost" id="stage-next-' + step.mi + '" onclick="App.nextVocabWord(' + step.mi + ',' + dayIdx + ')">下一个单词</button>';
     } else {
-      html += '<button class="btn-ghost" onclick="App.nextStep()">' + (this.state.stepIdx === steps.length - 1 ? '完成' : '下一题') + '</button>';
+      // Name the button after what actually comes next: reading a passage is
+      // a run of sentences, not a run of questions.
+      var nextStep = steps[this.state.stepIdx + 1];
+      var label;
+      if (this.state.stepIdx === steps.length - 1) label = '完成';
+      else if (step.kind === 'sentence') label = nextStep && nextStep.kind === 'passage' ? '看全文' : '下一句';
+      else label = '下一题';
+      html += '<button class="btn-ghost" id="stage-next-btn" onclick="App.nextStep()">' + label + '</button>';
     }
     html += '</div>';
 
@@ -4253,7 +4282,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder"><img src="photo.jpeg?v=43" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=45" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>
