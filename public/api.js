@@ -599,6 +599,22 @@ const Api = {
   },
   TRANSCRIBE_TIMEOUT: 12000,
 
+  // Whisper emits stock phrases from its training data when it is handed
+  // audio it cannot make sense of. Treating those as a real answer scores the
+  // child 0 for something they may well have read correctly.
+  // Only phrases that cannot plausibly be an answer. "you" and "bye" are real
+  // words a child might be asked to read, so they stay off this list even
+  // though Whisper also emits them as filler.
+  FILLERS: ['thank you', 'thanks for watching', 'thanks for watching!',
+            'subscribe', 'please subscribe', '. .', '...', '。'],
+
+  isFillerTranscript(text) {
+    if (!text) return true;
+    const t = String(text).toLowerCase().replace(/[^a-z\s.]/g, '').trim();
+    if (!t || t === '.') return true;
+    return this.FILLERS.indexOf(t) >= 0 || this.FILLERS.indexOf(t.replace(/\.$/, '')) >= 0;
+  },
+
   async transcribe(blob, meta) {
     if (!blob) return null;
     const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;

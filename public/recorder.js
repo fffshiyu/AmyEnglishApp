@@ -41,6 +41,25 @@ const Recorder = {
     return this._workletUrl;
   },
 
+  // Build the AudioContext and compile the worklet ahead of time so even the
+  // FIRST hold starts capturing immediately. Touches no microphone — the
+  // stream is only requested in start().
+  async warmUp() {
+    if (!this.supported() || (this._ctx && this._workletReady)) return;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!this._ctx || this._ctx.state === 'closed') {
+        try { this._ctx = new AC({ sampleRate: this.TARGET_RATE }); }
+        catch (e) { this._ctx = new AC(); }
+        this._workletReady = false;
+      }
+      if (this._ctx.audioWorklet && !this._workletReady) {
+        await this._ctx.audioWorklet.addModule(this._workletModuleUrl());
+        this._workletReady = true;
+      }
+    } catch (e) { /* falls back to building it on first use */ }
+  },
+
   // Start capturing. Returns a handle; call stop() to get the WAV blob.
   // onLevel(0..1) fires continuously for the UI meter.
   async start(opts) {
@@ -54,12 +73,17 @@ const Recorder = {
       },
     });
 
+    // Reuse one AudioContext across takes. Building it and compiling the
+    // worklet each time cost ~95ms, and a child who starts speaking the
+    // instant they press lost that much off the front of the word.
     const AC = window.AudioContext || window.webkitAudioContext;
-    // Asking for 16kHz directly avoids resampling on most browsers. Safari
-    // ignores the hint, so _encodeWav resamples from ctx.sampleRate instead.
-    let ctx;
-    try { ctx = new AC({ sampleRate: this.TARGET_RATE }); }
-    catch (e) { ctx = new AC(); }
+    let ctx = this._ctx;
+    if (!ctx || ctx.state === 'closed') {
+      try { ctx = new AC({ sampleRate: this.TARGET_RATE }); }
+      catch (e) { ctx = new AC(); }
+      this._ctx = ctx;
+      this._workletReady = false;
+    }
     if (ctx.state === 'suspended') { try { await ctx.resume(); } catch (e) {} }
 
     const source = ctx.createMediaStreamSource(stream);
@@ -80,7 +104,10 @@ const Recorder = {
     let node = null, usingWorklet = false;
     if (ctx.audioWorklet) {
       try {
-        await ctx.audioWorklet.addModule(this._workletModuleUrl());
+        if (!this._workletReady) {
+          await ctx.audioWorklet.addModule(this._workletModuleUrl());
+          this._workletReady = true;
+        }
         node = new AudioWorkletNode(ctx, 'pcm-tap');
         node.port.onmessage = e => onFrame(e.data);
         usingWorklet = true;
@@ -119,7 +146,9 @@ const Recorder = {
     try { a.sink.disconnect(); } catch (e) {}
     try { a.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
     const srcRate = a.ctx.sampleRate;
-    try { await a.ctx.close(); } catch (e) {}
+    // Context stays open on purpose — closing it is what made the next take
+    // slow to start. It holds no microphone; the stream tracks above do.
+
 
     const total = a.chunks.reduce((n, c) => n + c.length, 0);
     if (!total) return null;
@@ -139,6 +168,27 @@ const Recorder = {
       sampleRate: this.TARGET_RATE,
       peak: a.peak(),
     };
+  },
+
+  // Whisper hallucinates on very short audio — a 0.21s "beautiful" came back
+  // as "Thank you." (filler from its training data), which then scored 0. The
+  // same clip padded out to 0.91s transcribed correctly. So anything sent for
+  // recognition gets silence front and back, up to a floor of MIN_ASR_SECONDS.
+  //
+  // Padding is applied ONLY to the copy sent for recognition. The clip kept
+  // for playback stays as recorded, or every joined take would carry dead air.
+  MIN_ASR_SECONDS: 1.2,
+  ASR_PAD_SECONDS: 0.35,
+
+  padForAsr(samples) {
+    if (!samples || !samples.length) return null;
+    const pad = Math.round(this.ASR_PAD_SECONDS * this.TARGET_RATE);
+    const floor = Math.round(this.MIN_ASR_SECONDS * this.TARGET_RATE);
+    const needed = Math.max(floor - samples.length - pad * 2, 0);
+    const tail = pad + needed;
+    const out = new Float32Array(pad + samples.length + tail);
+    out.set(samples, pad);                       // rest stays zero = silence
+    return this._encodeWav(out, this.TARGET_RATE);
   },
 
   // Join takes into a single WAV, with a short gap so the words stay distinct.

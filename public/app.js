@@ -403,7 +403,7 @@ const App = {
     // photo for a child.
     const headerPhoto = document.getElementById('header-photo');
     if (headerPhoto) {
-      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=31';
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=34';
       headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
@@ -2293,6 +2293,7 @@ const App = {
   },
 
   startReadAlong(mi, qi, dayIdx) {
+    Recorder.warmUp();
     const m = HOMEWORK_DATA[dayIdx].modules[mi];
     const q = m.questions[qi];
     const readArea = document.getElementById('sp-read-' + mi);
@@ -2365,8 +2366,9 @@ const App = {
           + '<p style="font-size:15px;color:var(--primary);margin-bottom:6px">正在识别…</p>'
           + '<p class="fs-12 text-sub">正在比对你读的和原句</p></div>';
       }
-      const out = await Api.transcribe(blob, null);
-      if (out && out.text) spoken = out.text.toLowerCase();
+      const forAsr = (this._spClipSamples && Recorder.padForAsr(this._spClipSamples)) || blob;
+      const out = await Api.transcribe(forAsr, null);
+      if (out && out.text && !Api.isFillerTranscript(out.text)) spoken = out.text.toLowerCase();
     }
 
     if (spoken) {
@@ -2539,6 +2541,7 @@ const App = {
       .then(out => {
         this._spClipBlob = out ? out.blob : null;
         this._spClipMeta = out ? { duration: out.duration, sampleRate: out.sampleRate, peak: out.peak } : null;
+        this._spClipSamples = out ? out.samples : null;
         this._spClipPending = null;
         return this._spClipBlob;
       })
@@ -3050,6 +3053,7 @@ const App = {
   // and W as "www." — scoring those would fail a child who read correctly.
   _renderSpellRead(m, mi, dayIdx, word, units, kind) {
     var self = this;
+    Recorder.warmUp();          // so the first hold does not clip the start
     this._spell = { mi: mi, kind: kind, word: word.word, total: units.length,
                     takes: {}, unitScores: {}, wordTake: null, score: null };
 
@@ -3097,6 +3101,7 @@ const App = {
       if (!out) return;
       el.classList.add('read-done');
       if (out.samples) self._spell.takes[idx] = out.samples;   // kept for the joined playback
+      self._spell.finished = false;      // a new take must re-run the summary
 
       if (!scored) {
         if (status) status.innerHTML = '<div class="tap-result good">已录「' + label + '」</div>';
@@ -3130,6 +3135,7 @@ const App = {
       if (el) el.classList.remove('reading');
       if (!out) return;
       if (el) el.classList.add('read-done');
+      self._spell.finished = false;      // re-reading must re-score and redraw
       var a = self.alignSpeech(wordText, text || '');
       self._spell.wordTake = out.samples || null;
       self._spell.score = a.score;
@@ -3178,8 +3184,10 @@ const App = {
 
     var html = '<div class="letter-comprehensive">';
     html += '<div class="lc-label">' + sp.word + '</div>';
-    html += '<div class="lc-score">' + (sp.score === null ? '-' : sp.score) + '</div>';
-    html += '<div class="fs-12 text-sub">整词得分</div>';
+    var noSpeech = !sp.heard;
+    html += '<div class="lc-score">' + (noSpeech || sp.score === null ? '—' : sp.score) + '</div>';
+    html += '<div class="fs-12 text-sub">'
+         + (noSpeech ? '没听清，按住上面的单词再读一次' : '整词得分') + '</div>';
     if (sp.kind === 'syllable') {
       var okN = 0, rows = '';
       for (var k = 0; k < sp.total; k++) {
@@ -3284,7 +3292,7 @@ const App = {
     if (!key) return;
 
     // A stray tap is not an attempt — drop it rather than scoring silence.
-    if (heldMs < 350) {
+    if (heldMs < 220) {
       try { await Recorder.stop(); } catch (e) {}
       if (statusEl) statusEl.innerHTML = '<div class="tap-result bad">按住不放才能录音</div>';
       return;
@@ -3300,8 +3308,12 @@ const App = {
     }
     // Pieces of a word are practice, not a test — no upload, no recognition.
     if (!needs) { if (onDone) onDone(out, null); return; }
-    var res = await Api.transcribe(out.blob, null);
-    if (onDone) onDone(out, res && res.text ? res.text : null);
+    // Send the padded copy — short clips make Whisper hallucinate.
+    var forAsr = (out.samples && Recorder.padForAsr(out.samples)) || out.blob;
+    var res = await Api.transcribe(forAsr, null);
+    var text = res && res.text ? res.text : null;
+    if (Api.isFillerTranscript(text)) text = null;
+    if (onDone) onDone(out, text);
   },
 
   // Writing template
@@ -3840,7 +3852,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder"><img src="photo.jpeg?v=31" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=34" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>
