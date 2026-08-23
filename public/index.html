@@ -61,10 +61,17 @@ input,textarea,select{font-family:inherit;font-size:14px;outline:none}
   background:var(--surface);border:1px solid var(--line);
   border-radius:var(--radius-pill);box-shadow:var(--shadow-1)}
 
-/* 左：标签。数量多时在自身内部横向滚动，不把用户区挤走 */
+/* 左：标签。数量多时在自身内部横向滚动，不把用户区挤走。
+   右侧渐隐是「还有更多」的提示——没有它，被挤出去的标签在桌面端
+   完全无从发现（触屏能滑，鼠标不能）。 */
 .nav-tabs{display:flex;align-items:center;gap:2px;flex:1 1 auto;min-width:0;
-  overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none}
+  overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none;
+  scroll-behavior:smooth;overscroll-behavior-x:contain}
 .nav-tabs::-webkit-scrollbar{display:none}
+.nav-tabs.is-overflowing{
+  -webkit-mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent);
+  mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent)}
+.nav-tabs.is-overflowing.at-end{-webkit-mask-image:none;mask-image:none}
 .nav-tabs button{display:inline-flex;align-items:center;gap:7px;flex:none;
   padding:9px 14px;border-radius:var(--radius-pill);background:transparent;
   color:var(--ink-2);font-size:14px;font-weight:500;white-space:nowrap;
@@ -91,6 +98,26 @@ input,textarea,select{font-family:inherit;font-size:14px;outline:none}
 .nav-tabs .icon{width:18px;height:18px}
 .icon-xl{width:44px;height:44px}
 .icon-sm{width:16px;height:16px;display:inline-block;vertical-align:-3px}
+
+/* 点击即录 */
+.tap-rec{display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;
+  margin-top:10px;font-size:14px;color:var(--ink)}
+.tap-hint{font-size:12px;color:var(--ink-3)}
+.tap-dot{width:9px;height:9px;border-radius:50%;background:#D6321F;flex:none;
+  animation:tapPulse 1s var(--ease) infinite}
+@keyframes tapPulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.8)}}
+.tap-spin{width:12px;height:12px;border-radius:50%;flex:none;
+  border:2px solid var(--line);border-top-color:var(--orange);animation:tapSpin .7s linear infinite}
+@keyframes tapSpin{to{transform:rotate(360deg)}}
+.tap-result{margin-top:10px;font-size:14px;font-weight:500}
+.tap-result.good{color:var(--ink)}
+.tap-result.bad{color:#D6321F}
+.tap-heard{display:block;font-size:12px;font-weight:400;color:var(--ink-3);margin-top:3px}
+.letter-box.read-miss{border-color:#D6321F;color:#D6321F}
+.word-read-btn{display:block;margin:14px auto 0;padding:11px 22px;border-radius:var(--radius-pill);
+  background:var(--orange);color:#fff;font-size:15px;font-weight:500;max-width:100%}
+.word-read-btn:hover{background:var(--orange-press)}
+.word-read-btn.reading{background:#D6321F}
 
 /* 语音识别对比：逐词标记 */
 .align-sentence{font-size:19px;line-height:1.9;margin:4px 0 8px;word-spacing:2px}
@@ -359,7 +386,8 @@ body.stage-mode .content-area{padding-block:0}
   #header-name{display:none}
   .class-badge{display:none}
   #invite-btn-header,#settings-btn-header{display:none !important}
-  .nav-tabs button{font-size:13px;padding:8px 11px;gap:6px}
+  .nav-tabs button{font-size:13px;padding:8px 10px;gap:5px}
+  .nav-tabs .icon{width:16px;height:16px}
   .content-area{padding:6px var(--gutter) 24px}
   .day-grid{grid-template-columns:1fr 1fr}
   .a4-sheet{width:100%;min-height:auto;padding:16px 12px;font-size:11pt}
@@ -559,7 +587,7 @@ body.stage-mode .content-area{padding-block:0}
 <!-- Login Page -->
 <div id="login-page" class="login-page">
   <div class="login-box login-box-compact">
-    <div class="login-photo" style="margin-bottom:4px"><img src="photo.jpeg?v=24" alt="Amy老师英语打卡" width="56" height="56"></div>
+    <div class="login-photo" style="margin-bottom:4px"><img src="photo.jpeg?v=25" alt="Amy老师英语打卡" width="56" height="56"></div>
     <h2 style="font-size:18px;margin-bottom:2px">Amy老师英语打卡</h2>
     <p class="subtitle" style="font-size:12px;margin-bottom:14px">登录打卡，每天进步一点点</p>
     <div class="form-group" style="margin-bottom:10px">
@@ -585,7 +613,7 @@ body.stage-mode .content-area{padding-block:0}
 <!-- Waiting Page (for unapproved students) -->
 <div id="waiting-page" class="login-page hidden">
   <div class="login-box">
-    <div class="login-photo"><img src="photo.jpeg?v=24" alt="Amy老师英语打卡" width="56" height="56"></div>
+    <div class="login-photo"><img src="photo.jpeg?v=25" alt="Amy老师英语打卡" width="56" height="56"></div>
     <h2>等待老师审核</h2>
     <p class="subtitle">你的注册信息已提交</p>
     <div class="card" style="background:var(--warning-light);text-align:center;padding:20px;margin:16px 0">
@@ -617,7 +645,7 @@ body.stage-mode .content-area{padding-block:0}
       <nav class="navbar">
         <div class="nav-tabs" id="tab-bar"></div>
         <div class="nav-user">
-          <img id="header-photo" class="photo" src="photo.jpeg?v=24" alt="">
+          <img id="header-photo" class="photo" src="photo.jpeg?v=25" alt="">
           <span id="header-name">Amy老师英语打卡</span>
           <span class="class-badge" id="class-badge"></span>
           <button class="icon-btn" id="invite-btn-header" onclick="App.showInvite()" title="邀请" aria-label="邀请"><svg class="icon"><use href="#i-link"/></svg></button>
@@ -659,12 +687,12 @@ body.stage-mode .content-area{padding-block:0}
   <div class="modal" id="modal-box"></div>
 </div>
 
-<script src="cloud.js?v=24"></script>
-<script src="data.js?v=24"></script>
+<script src="cloud.js?v=25"></script>
+<script src="data.js?v=25"></script>
 <!-- api.js must load before app.js: app.js calls Api at init. -->
-<script src="recorder.js?v=24"></script>
-<script src="api.js?v=24"></script>
-<script src="app.js?v=24"></script>
+<script src="recorder.js?v=25"></script>
+<script src="api.js?v=25"></script>
+<script src="app.js?v=25"></script>
 <script>
 // Register Service Worker for PWA
 if ('serviceWorker' in navigator) {

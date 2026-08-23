@@ -403,7 +403,7 @@ const App = {
     // photo for a child.
     const headerPhoto = document.getElementById('header-photo');
     if (headerPhoto) {
-      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=24';
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=25';
       headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
@@ -1163,6 +1163,38 @@ const App = {
       ];
     }
     bar.innerHTML = tabs.map(t => `<button class="${t.id===this.state.currentTab?'active':''}" onclick="App.switchTab('${t.id}')"><svg class="icon"><use href="#${t.icon}"/></svg>${t.name}</button>`).join('');
+    this._setupTabScroll(bar);
+  },
+
+  // The tab strip scrolls horizontally when it overflows. Touch can swipe it,
+  // but a mouse cannot scroll an overflow-x container — so tabs pushed off the
+  // end were simply unreachable on a narrow desktop window. Three fixes:
+  // map the wheel onto it, fade the right edge so it looks scrollable, and
+  // always bring the active tab into view.
+  _setupTabScroll(bar) {
+    const sync = () => {
+      const over = bar.scrollWidth > bar.clientWidth + 1;
+      bar.classList.toggle('is-overflowing', over);
+      bar.classList.toggle('at-end', over && bar.scrollLeft + bar.clientWidth >= bar.scrollWidth - 2);
+    };
+
+    if (!bar._scrollWired) {
+      bar._scrollWired = true;
+      bar.addEventListener('wheel', (e) => {
+        if (bar.scrollWidth <= bar.clientWidth) return;
+        // Trackpads send deltaX; mice only send deltaY. Use whichever is bigger.
+        const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+        if (!d) return;
+        e.preventDefault();
+        bar.scrollLeft += d;
+      }, { passive: false });
+      bar.addEventListener('scroll', sync, { passive: true });
+      window.addEventListener('resize', sync);
+    }
+
+    const active = bar.querySelector('button.active');
+    if (active) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    sync();
   },
 
   async switchTab(tab) {
@@ -2268,8 +2300,6 @@ const App = {
 
     // Capture the audio for real, in parallel with speech recognition.
     this._startClipCapture();
-    this._asrDelivered = false;
-    this._asrTranscript = null;
     this._readFinished = false;      // latch, reset per attempt
     // Count attempts per question so 重新跟读 shows as round 2, 3, … for the
     // teacher instead of every record claiming to be the first try.
@@ -2299,48 +2329,11 @@ const App = {
     }, 1000);
     self._recTimerInterval = timerInterval;
 
-    // Recognition is best-effort on top of the recording. It must never end
-    // the exercise: Chrome's recogniser talks to Google servers and fails
-    // within a second where that is unreachable — which used to terminate the
-    // read-along before the child had said anything.
-    self._asrFailed = null;
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (SR) {
-      try {
-        const rec = new SR();
-        rec.lang = 'en-US';
-        rec.continuous = false;
-        rec.interimResults = false;
-        rec.maxAlternatives = 1;
-
-        rec.onresult = (e) => {
-          self._asrDelivered = true;
-          self._asrTranscript = e.results[0][0].transcript.toLowerCase();
-          self._finishRead(mi, qi, dayIdx);        // heard a full utterance
-        };
-
-        rec.onerror = (e) => {
-          // Keep recording. Just note it, so the child sees why there will be
-          // no automatic word-by-word comparison this time.
-          self._asrFailed = (e && e.error === 'no-speech') ? '没有听到声音'
-                          : (e && e.error === 'not-allowed') ? '麦克风未授权'
-                          : '语音识别不可用';
-          const hint = document.getElementById('asr-hint-' + mi);
-          if (hint) hint.textContent = self._asrFailed + '，读完点「结束朗读」自评';
-        };
-
-        rec.onend = () => {};
-
-        rec.start();
-        self._currentRec = rec;
-      } catch(e) {
-        self._asrFailed = '语音识别不可用';
-      }
-    } else {
-      self._asrFailed = '此浏览器不支持语音识别';
-      const hint = document.getElementById('asr-hint-' + mi);
-      if (hint) hint.textContent = self._asrFailed + '，读完点「结束朗读」自评';
-    }
+    // Recognition is Workers AI only. The browser's SpeechRecognition used to
+    // be tried first, but it exists only on Chrome and streams the audio to
+    // Google — so the same child got a different recogniser (and a different
+    // score) depending on which phone they picked up, and on most of them it
+    // failed outright. One path means one behaviour everywhere.
 
     // Hard cap so a forgotten session cannot record forever.
     clearTimeout(self._readCapTimer);
@@ -2356,7 +2349,6 @@ const App = {
     this._readFinished = true;
     clearTimeout(this._readCapTimer);
     if (this._recTimerInterval) { clearInterval(this._recTimerInterval); this._recTimerInterval = null; }
-    if (this._currentRec) { try { this._currentRec.stop(); } catch(e) {} this._currentRec = null; }
 
     const m = HOMEWORK_DATA[dayIdx].modules[mi];
     const q = m.questions[qi];
@@ -2366,18 +2358,15 @@ const App = {
     // so nothing the network does can lose the child's work.
     const blob = await this._finishClipCapture();
 
-    // Local recognition (SpeechRecognition) wins if it already answered —
-    // it costs nothing and is instant. Otherwise ask our own Worker.
-    let spoken = (this._asrDelivered && this._asrTranscript) ? this._asrTranscript : null;
-
-    if (!spoken && blob) {
+    let spoken = null;
+    if (blob) {
       if (readArea) {
         readArea.innerHTML = '<div class="speak-record show" style="text-align:center">'
           + '<p style="font-size:15px;color:var(--primary);margin-bottom:6px">正在识别…</p>'
           + '<p class="fs-12 text-sub">正在比对你读的和原句</p></div>';
       }
       const out = await Api.transcribe(blob, null);
-      if (out && out.text) { spoken = out.text.toLowerCase(); this._asrSource = 'worker'; }
+      if (out && out.text) spoken = out.text.toLowerCase();
     }
 
     if (spoken) {
@@ -2386,18 +2375,13 @@ const App = {
         this.findWrongWords(q.sentence.toLowerCase(), spoken));
     } else {
       this._showSelfAssessment(mi, qi, dayIdx, q,
-        blob ? '这次没识别出内容' : (this._asrFailed || '没有录到音频'));
+        blob ? '这次没识别出内容' : '没有录到音频');
     }
   },
 
   // Stop reading manually (when child clicks "结束朗读")
   _stopReading(mi, qi, dayIdx) {
-    // Give a recognition result that is already in flight a moment to land,
-    // otherwise self-assessment would replace a comparison we are about to get.
-    var self = this;
-    if (self._asrDelivered) { self._finishRead(mi, qi, dayIdx); return; }
-    if (self._currentRec) { try { self._currentRec.stop(); } catch(e) {} }
-    setTimeout(function() { self._finishRead(mi, qi, dayIdx); }, 900);
+    this._finishRead(mi, qi, dayIdx);
   },
 
   // Show speech recognition result
@@ -2845,18 +2829,18 @@ const App = {
       html += '<div class="vocab-emoji-card" style="width:100px;height:100px;font-size:52px">' + word.emoji + '</div>';
       html += '<div class="vocab-word">' + word.word + '</div>';
       html += '<div class="vocab-phonetic">' + word.phonetic + '</div>';
-      html += '<div class="read-instruction">\u{1F446} \u70B9\u51FB\u5B57\u6BCD \u2192 \u9EA6\u514B\u98CE\u5F55\u97F3 \u2192 \u81EA\u52A8\u8BC4\u5206\uFF08\u5171\u4E24\u8F6E\uFF0C\u65E0\u673A\u5668\u53D1\u97F3\uFF09</div>';
-      html += '<div class="read-round-badge" id="letter-round-' + mi + '">第 1 轮</div>';
+      html += '<div class="read-instruction">点字母开始录，再点一次结束</div>';
       html += '<div class="letter-read-container" id="letter-container-' + mi + '">';
       for (var li = 0; li < letters.length; li++) {
         html += '<div class="letter-box student-read" id="letter-' + mi + '-' + li + '" onclick="App._readLetter(' + mi + ',' + li + ',' + letters.length + ')">' + letters[li].toUpperCase() + '</div>';
       }
       html += '</div>';
+      html += '<button class="word-read-btn" id="word-read-btn-' + mi + '" onclick="App._readWholeWord(' + mi + ',\'' + word.word.replace(/'/g,"\\'") + '\',' + letters.length + ')">读整个单词：' + word.word + '</button>';
       html += '<div id="letter-read-area-' + mi + '"></div>';
       html += '<div id="letter-read-btn-' + mi + '" style="display:none;margin-top:12px">';
       html += '<button class="vocab-btn" onclick="App.nextVocabStage(' + mi + ',' + dayIdx + ',' + m.words.length + ',' + word.stages.length + ')">我读好了 →</button>';
       html += '</div>';
-      this._letterReadState = { round: 1, done: 0, total: letters.length };
+      this._letterScores = {}; this._wordScore = {};
     } else if (stage.type === 'syllable_blend') {
       var syllables = word.syllables || [word.word];
       html += '<div class="vocab-step-label">🎵 音标拼合</div>';
@@ -3062,17 +3046,168 @@ const App = {
   },
 
   // Start recording a letter — NO machine audio, just microphone
+  // ===== Tap to record =====
+  // Tap once to start, tap again to stop — like a voice message. The old flow
+  // forced a fixed 3-second countdown on every single letter, so reading a
+  // 7-letter word meant sitting through 21 seconds of waiting.
+  //
+  // Everything routes through Recorder (16kHz WAV) and is judged by Workers AI,
+  // the same as the read-along.
+  _tapRecord(key, promptLabel, statusEl, onDone) {
+    var self = this;
+    // Second tap on the same target ends it.
+    if (this._tapKey === key) { this._endTapRecord(); return; }
+    if (this._tapKey) this._endTapRecord();
+
+    this._tapKey = key;
+    this._tapDone = onDone;
+    this._tapStatusEl = statusEl;
+
+    var setStatus = function(html) { if (statusEl) statusEl.innerHTML = html; };
+    setStatus('<div class="tap-rec"><span class="tap-dot"></span>正在录「' + promptLabel + '」'
+            + '<span class="tap-hint">再点一次结束</span>'
+            + '<div class="rec-wave"><div class="rec-wave-bar" id="tap-wave" style="width:0%"></div></div></div>');
+
+    if (!Recorder.supported()) {
+      setStatus('<div class="fs-12" style="color:#D6321F">此浏览器不支持录音</div>');
+      this._tapKey = null;
+      return;
+    }
+
+    Recorder.start({
+      onLevel: function(v) {
+        var bar = document.getElementById('tap-wave');
+        if (bar) bar.style.width = Math.min(100, Math.round(v * 140)) + '%';
+      }
+    }).catch(function(e) {
+      setStatus('<div class="fs-12" style="color:#D6321F">无法访问麦克风，请允许权限</div>');
+      self._tapKey = null;
+    });
+
+    // Never leave the mic open if the child wanders off.
+    clearTimeout(this._tapCap);
+    this._tapCap = setTimeout(function() { self._endTapRecord(); }, 15000);
+  },
+
+  async _endTapRecord() {
+    var key = this._tapKey, onDone = this._tapDone, statusEl = this._tapStatusEl;
+    this._tapKey = null; this._tapDone = null;
+    clearTimeout(this._tapCap);
+    if (!key) return;
+
+    if (statusEl) statusEl.innerHTML = '<div class="tap-rec"><span class="tap-spin"></span>正在识别…</div>';
+    var out = null;
+    try { out = await Recorder.stop(); } catch (e) { console.warn('tap stop failed', e); }
+    if (!out || !out.blob) {
+      if (statusEl) statusEl.innerHTML = '<div class="fs-12 text-sub">没有录到声音，再试一次</div>';
+      if (onDone) onDone(null, null);
+      return;
+    }
+    var res = await Api.transcribe(out.blob, null);
+    if (onDone) onDone(out, res && res.text ? res.text : null);
+  },
+
+  // Whisper hears a spoken letter as its NAME, not its character: "M" comes
+  // back as "em" or "M", "R" as "are". Accept the character, the name, and the
+  // handful of homophones that show up in practice.
+  LETTER_NAMES: {
+    a:['a','ay','eh'], b:['b','bee','be'], c:['c','see','sea'], d:['d','dee'],
+    e:['e','ee'], f:['f','ef','eff'], g:['g','gee','jee'], h:['h','aitch','aych','h.'],
+    i:['i','eye','aye'], j:['j','jay'], k:['k','kay','okay'], l:['l','el','ell'],
+    m:['m','em'], n:['n','en'], o:['o','oh','owe'], p:['p','pee','pea'],
+    q:['q','cue','queue'], r:['r','are','ar'], s:['s','es','ess'], t:['t','tee','tea'],
+    u:['u','you','yoo'], v:['v','vee'], w:['w','double u','double you','dubya'],
+    x:['x','ex','eks'], y:['y','why','wye'], z:['z','zee','zed'],
+  },
+
+  _gradeLetter(expected, transcript) {
+    if (!transcript) return { ok: false, heard: null };
+    var want = String(expected).toLowerCase().trim();
+    var heard = String(transcript).toLowerCase().replace(/[^a-z\s]/g, ' ').trim();
+    var names = this.LETTER_NAMES[want] || [want];
+    var tokens = heard.split(/\s+/).filter(Boolean);
+    var hit = names.some(function(n) {
+      return n.indexOf(' ') >= 0 ? heard.indexOf(n) >= 0 : tokens.indexOf(n) >= 0;
+    });
+    return { ok: hit, heard: transcript };
+  },
+
   _readLetter(mi, ci, total) {
     var el = document.getElementById('letter-' + mi + '-' + ci);
-    if (!el || el.classList.contains('read-done') || el.classList.contains('reading')) return;
-    // Stop any previous recording
-    this._stopOngoingRecording();
-    // Reset other reading letters
+    if (!el) return;
+    var self = this;
+    var letter = el.textContent.trim();
+    var area = document.getElementById('letter-read-area-' + mi);
     var reading = document.querySelectorAll('#letter-container-' + mi + ' .letter-box.reading');
     reading.forEach(function(l) { l.classList.remove('reading'); });
+
+    if (this._tapKey === 'letter-' + mi + '-' + ci) { this._endTapRecord(); return; }
     el.classList.add('reading');
+
+    this._tapRecord('letter-' + mi + '-' + ci, letter, area, function(out, text) {
+      el.classList.remove('reading');
+      if (!out) return;
+      var g = self._gradeLetter(letter, text);
+      if (!self._letterScores) self._letterScores = {};
+      self._letterScores[mi + '-' + ci] = { ok: g.ok, heard: g.heard, letter: letter };
+      // Recognised or not, the letter counts as read. Single-letter ASR is
+      // measured-unreliable (Whisper returned "Capitoli" for a spoken E), so
+      // marking it wrong would fail children who read it correctly.
+      el.classList.add('read-done');
+      if (area) {
+        area.innerHTML = '<div class="tap-result good">'
+          + (g.ok ? '听到了：' + letter : '这个字母没听清，继续下一个')
+          + (g.heard ? '<span class="tap-heard">识别：' + g.heard + '</span>' : '')
+          + '</div>';
+      }
+      Api.submitSpeakingScore({
+        studentId: self._myStudentId(), dayIdx: self.state.currentDay,
+        moduleIdx: mi, itemIdx: ci, round: 1, type: 'letter',
+        label: letter, score: g.ok ? 100 : 0, spoken: g.heard, source: 'asr',
+      });
+      self._afterLetterRead(mi, total);
+    });
+  },
+
+  // Whole-word reading — the button the letters build up to.
+  _readWholeWord(mi, word, total) {
+    var self = this;
     var area = document.getElementById('letter-read-area-' + mi);
-    this._startRecording(el, area, 'letter', mi, ci, total);
+    var btn = document.getElementById('word-read-btn-' + mi);
+
+    if (this._tapKey === 'word-' + mi) { this._endTapRecord(); return; }
+    if (btn) btn.classList.add('reading');
+
+    this._tapRecord('word-' + mi, word, area, function(out, text) {
+      if (btn) btn.classList.remove('reading');
+      if (!out) return;
+      var a = self.alignSpeech(word, text || '');
+      self._wordScore = self._wordScore || {};
+      self._wordScore[mi] = { score: a.score, heard: text, ok: a.ok, total: a.total };
+      if (area) {
+        area.innerHTML = '<div class="tap-result ' + (a.score >= 60 ? 'good' : 'bad') + '">'
+          + '整词 ' + a.score + ' 分'
+          + (text ? '<span class="tap-heard">识别：' + text + '</span>' : '<span class="tap-heard">没识别出内容</span>')
+          + '</div>';
+      }
+      Api.submitSpeakingScore({
+        studentId: self._myStudentId(), dayIdx: self.state.currentDay,
+        moduleIdx: mi, itemIdx: 99, round: 1, type: 'word',
+        label: word, score: a.score, spoken: text, source: 'asr',
+      });
+      self._afterLetterRead(mi, total);
+    });
+  },
+
+  // Show the summary once every letter has been tried and the word is done.
+  _afterLetterRead(mi, total) {
+    var done = 0;
+    for (var i = 0; i < total; i++) if (this._letterScores && this._letterScores[mi + '-' + i]) done++;
+    var wordDone = this._wordScore && this._wordScore[mi];
+    if (done >= total && wordDone) {
+      var self = this;
+      setTimeout(function() { self._showLetterComprehensive(mi, total); }, 600);
+    }
   },
 
   // Start recording a syllable — NO machine audio (removed this.speak())
@@ -3310,33 +3445,33 @@ const App = {
     var self = this;
     var area = document.getElementById('letter-read-area-' + mi);
     var btn = document.getElementById('letter-read-btn-' + mi);
-    if (!this._letterScores) this._letterScores = {};
-    var allScores = [];
-    var letterRows = '';
-    var letters = document.querySelectorAll('#letter-container-' + mi + ' .letter-box');
-    letters.forEach(function(el, idx) {
-      var letterChar = el.textContent;
-      var s1 = self._letterScores[mi + '-' + idx + '-1'] || 0;
-      var s2 = self._letterScores[mi + '-' + idx + '-2'] || 0;
-      var avg = Math.round((s1 + s2) / 2);
-      allScores.push(avg);
-      letterRows += '<div class="letter-detail-row">' +
-        '<span class="ldr-letter">' + letterChar + '</span>' +
-        '<span class="ldr-score" style="color:' + (avg >= 60 ? 'var(--success)' : 'var(--danger)') + '">' + avg + '\u5206</span>' +
-        '</div>';
-    });
-    var overall = allScores.length > 0 ? Math.round(allScores.reduce(function(a,b){return a+b;},0) / allScores.length) : 0;
-    var stars = '';
-    for (var i = 0; i < 5; i++) {
-      stars += i < Math.round(overall / 20) ? '\u2B50' : '\u2606';
+    var scores = this._letterScores || {};
+    var wordRes = (this._wordScore || {})[mi] || { score: 0, heard: null };
+
+    var rows = '', okCount = 0;
+    for (var i = 0; i < total; i++) {
+      var r = scores[mi + '-' + i];
+      if (r && r.ok) okCount++;
+      rows += '<div class="letter-detail-row">'
+        + '<span class="ldr-letter">' + (r ? r.letter : '-') + '</span>'
+        + '<span class="ldr-score" style="color:var(--ink-3)">'
+        + (r ? (r.ok ? '认出' : '没听清') : '未读') + '</span></div>';
     }
+
+    // The score IS the whole-word score. Isolated letters were measured
+    // against real Whisper and it missed 2 of 7 (E came back as "Capitoli"),
+    // so letting them move the number would just add noise — they are shown
+    // for reference only.
+    var overall = wordRes.score;
+
     if (area) {
-      area.innerHTML = '<div class="letter-comprehensive">' +
-        '<div class="lc-label">\u5B57\u6BCD\u8DDF\u8BFB\u7EFC\u5408\u8BC4\u5206</div>' +
-        '<div class="lc-score">' + overall + '</div>' +
-        '<div class="lc-stars">' + stars + '</div>' +
-        '<div style="margin:12px 0;text-align:left">' + letterRows + '</div>' +
-        '</div>';
+      area.innerHTML = '<div class="letter-comprehensive">'
+        + '<div class="lc-label">综合评分</div>'
+        + '<div class="lc-score">' + overall + '</div>'
+        + '<div class="fs-12 text-sub">整词得分 · 字母认出 ' + okCount + '/' + total + ' 仅供参考</div>'
+        + '<div style="margin:12px 0;text-align:left">' + rows + '</div>'
+        + '<p class="fs-12 text-sub">分数来自语音识别比对，不代表发音准确度；单字母识别不稳定，未计入。</p>'
+        + '</div>';
     }
     if (btn) btn.style.display = 'block';
     this._playCelebrate();
@@ -3940,7 +4075,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder"><img src="photo.jpeg?v=24" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=25" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>
