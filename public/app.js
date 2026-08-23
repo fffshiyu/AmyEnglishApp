@@ -403,7 +403,7 @@ const App = {
     // photo for a child.
     const headerPhoto = document.getElementById('header-photo');
     if (headerPhoto) {
-      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=28';
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=29';
       headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
@@ -3099,7 +3099,10 @@ const App = {
     var area = document.getElementById('spell-result-area-' + mi);
     if (!area) return;
     if (done >= sp.total && sp.wordTake) {
-      area.innerHTML = '<button class="word-read-btn" onclick="App._finishSpell(' + mi + ')">听一遍并查看评分</button>';
+      // Everything is read — play the stitched take back and show the score
+      // straight away. Only moving on to the NEXT exercise waits for a tap.
+      if (!sp.finished) { sp.finished = true; this._finishSpell(mi); }
+      return;
     } else {
       area.innerHTML = '<div class="fs-12 text-sub">已读 ' + done + '/' + sp.total
         + (sp.wordTake ? '，整词已读' : '，整词未读') + '</div>';
@@ -3122,8 +3125,9 @@ const App = {
     html += '<div class="fs-12 text-sub">整词得分</div>';
     if (joined) {
       html += '<div class="mt-8"><div class="fs-12 text-sub mb-4">你的朗读（逐个 + 整词）</div>'
-           + '<audio controls src="' + URL.createObjectURL(joined.blob)
-           + '" style="width:100%;max-width:300px;height:34px"></audio></div>';
+           + '<audio id="spell-audio-' + mi + '" controls src="' + URL.createObjectURL(joined.blob)
+           + '" style="width:100%;max-width:300px;height:34px"></audio>'
+           + '<div class="fs-12 text-sub mt-4" id="spell-play-hint-' + mi + '"></div></div>';
     }
     html += '<p class="fs-12 text-sub mt-8">只对整词发音评分；单个字母/音节仅练习，不计分。</p>';
     html += '</div>';
@@ -3139,7 +3143,21 @@ const App = {
     }
     var btn = document.getElementById('letter-read-btn-' + mi);
     if (btn) btn.style.display = 'block';
-    this._playCelebrate();
+
+    // Autoplay is blocked unless the browser has seen a user gesture. Holding
+    // to record is one, but the transcription await in between can outlive it
+    // — so fall back to telling the child to hit play rather than silently
+    // doing nothing.
+    var audio = document.getElementById('spell-audio-' + mi);
+    if (audio) {
+      var hint = document.getElementById('spell-play-hint-' + mi);
+      var p = audio.play();
+      if (p && p.catch) {
+        p.catch(function() { if (hint) hint.textContent = '点上面的播放键听你的朗读'; });
+      }
+    } else {
+      this._playCelebrate();
+    }
   },
 
   // ===== Press and hold to record =====
@@ -3753,7 +3771,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder"><img src="photo.jpeg?v=28" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=29" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>
