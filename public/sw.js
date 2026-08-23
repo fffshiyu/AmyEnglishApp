@@ -3,7 +3,7 @@
 // Cache is only a fallback for offline use. This guarantees bug fixes
 // reach every device immediately (previous cache-first strategy kept
 // serving old app.js forever, which is why fixes "never worked").
-var CACHE_NAME = 'amy-english-v46';
+var CACHE_NAME = 'amy-english-v47';
 
 self.addEventListener('install', function(event) {
   event.waitUntil(

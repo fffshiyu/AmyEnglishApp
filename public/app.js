@@ -416,7 +416,7 @@ const App = {
     // photo for a child.
     const headerPhoto = document.getElementById('header-photo');
     if (headerPhoto) {
-      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=46';
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=47';
       headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
@@ -3088,6 +3088,89 @@ const App = {
       .filter(function(x) { return x.length > 1; });
   },
 
+  // Pair each English sentence with its Chinese counterpart — but only when
+  // the two really line up. Across the current passages 4 of 5 match; one has
+  // 8 English sentences against 7 Chinese, because a translator merged two.
+  // Pairing by index there would show the wrong reference answer, which is
+  // worse than showing none, so that passage keeps whole-passage translation.
+  _pairSentences(m) {
+    if (!m || !m.passage || !m.passage_cn) return null;
+    const en = this._splitSentences(m.passage);
+    const cn = String(m.passage_cn).replace(/\s+/g, '')
+      .split(/(?<=[。！？])/).map(function (x) { return x.trim(); })
+      .filter(function (x) { return x.length > 1; });
+    if (!en.length || en.length !== cn.length) return null;
+    return en.map(function (e, i) { return { en: e, cn: cn[i] }; });
+  },
+
+  // ===== Reading: translate a sentence aloud =====
+  renderTranslateStep(m, mi, si, dayIdx) {
+    const pairs = this._pairSentences(m);
+    const pair = pairs && pairs[si];
+    if (!pair) return '<div class="card text-center text-sub">这篇课文暂不支持逐句翻译</div>';
+    Recorder.warmUp();
+
+    let html = '<div class="sent-step">';
+    html += '<div class="sent-progress">翻译 ' + (si + 1) + ' / ' + pairs.length + ' 句</div>';
+    html += '<div class="sent-text tap-speak-sm" onclick="App.speak(\''
+         + pair.en.replace(/'/g, "\\'") + '\')" title="点一下听英文">' + pair.en + '</div>';
+    html += '<div class="sent-hint">用中文说出这句话的意思</div>';
+    html += '<button class="word-read-btn hold-target" id="trs-btn-' + mi + '-' + si + '"'
+         + ' onpointerdown="App._translateSentence(event,' + mi + ',' + si + ')"'
+         + ' onpointerup="App._holdEnd(event)" onpointercancel="App._holdEnd(event)"'
+         + ' oncontextmenu="return false">按住说中文</button>';
+    html += '<div id="trs-status-' + mi + '-' + si + '"></div>';
+    html += '<div id="trs-result-' + mi + '-' + si + '"></div>';
+    html += '</div>';
+    return html;
+  },
+
+  _translateSentence(ev, mi, si) {
+    const self = this;
+    const m = HOMEWORK_DATA[this.state.currentDay].modules[mi];
+    const pair = (this._pairSentences(m) || [])[si];
+    if (!pair) return;
+    const btn = document.getElementById('trs-btn-' + mi + '-' + si);
+    const status = document.getElementById('trs-status-' + mi + '-' + si);
+    if (btn) btn.classList.add('reading');
+
+    this._holdStart(ev, 'trs-' + mi + '-' + si, '这句的意思', status, function (out, text) {
+      if (btn) btn.classList.remove('reading');
+      if (!out) return;
+      const heard = text ? self._toSimplified(text) : '';
+      const r = self.scoreTranslation(pair.cn, heard);
+
+      let html = '<div class="spell-summary">';
+      html += '<div class="ss-head"><span class="ss-score">' + (heard ? r.score : '—') + '</span>'
+           + '<span class="ss-label">' + (heard ? '意思覆盖 ' + r.covered + '/' + r.total + ' 字'
+                                                : '没听清，再说一次') + '</span></div>';
+      if (heard) {
+        html += '<div class="tr-block"><div class="tr-label">你说的</div>'
+             + '<div class="tr-text">' + heard + '</div></div>';
+        html += '<div class="tr-block"><div class="tr-label">参考答案</div>'
+             + '<div class="tr-text ref">' + pair.cn + '</div></div>';
+      }
+      if (out.samples) {
+        const joined = Recorder.join([out.samples], 0);
+        if (joined) html += '<audio controls src="' + URL.createObjectURL(joined.blob)
+                         + '" style="width:100%;max-width:280px;height:32px"></audio>';
+      }
+      html += '</div>';
+      const slot = document.getElementById('trs-result-' + mi + '-' + si);
+      if (slot) slot.innerHTML = html;
+      if (status) status.innerHTML = '';
+
+      const next = document.getElementById('stage-next-btn');
+      if (next) next.classList.add('nudge');
+
+      Api.submitSpeakingScore({
+        studentId: self._myStudentId(), dayIdx: self.state.currentDay,
+        moduleIdx: mi, itemIdx: si, round: 1, type: 'translate-sentence',
+        label: pair.en, score: r.score, spoken: heard, source: 'asr',
+      });
+    });
+  },
+
   // ===== Reading: one sentence at a time =====
   // Tap the sentence to hear it, hold it to read it back. Deliberately no
   // Chinese here — the child is listening and imitating, not translating.
@@ -3790,6 +3873,8 @@ const App = {
         this._splitSentences(m.passage).forEach((sent, si) =>
           steps.push({ mi, si, kind: 'sentence' }));
         steps.push({ mi, kind: 'passage' });
+        const pairs = this._pairSentences(m);
+        if (pairs) pairs.forEach((pr, si) => steps.push({ mi, si, kind: 'translate' }));
       }
       if (m.questions) m.questions.forEach((q, qi) => steps.push({ mi, qi, kind: 'question' }));
     });
@@ -3884,6 +3969,8 @@ const App = {
       html += this.renderSentenceStep(m, step.mi, step.si, dayIdx);
     } else if (step.kind === 'passage') {
       html += this.renderPassageStep(m, step.mi, dayIdx);
+    } else if (step.kind === 'translate') {
+      html += this.renderTranslateStep(m, step.mi, step.si, dayIdx);
     } else if (step.kind === 'question') {
       // English only — the child has already read this passage aloud.
       if (m.passage) {
@@ -3921,6 +4008,8 @@ const App = {
       var label;
       if (this.state.stepIdx === steps.length - 1) label = '完成';
       else if (step.kind === 'sentence') label = nextStep && nextStep.kind === 'passage' ? '看全文' : '下一句';
+      else if (step.kind === 'translate') label = nextStep && nextStep.kind === 'translate' ? '下一句' : '开始做题';
+      else if (step.kind === 'passage') label = nextStep && nextStep.kind === 'translate' ? '逐句翻译' : '下一题';
       else label = '下一题';
       html += '<button class="btn-ghost" id="stage-next-btn" onclick="App.nextStep()">' + label + '</button>';
     }
@@ -4299,7 +4388,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder"><img src="photo.jpeg?v=46" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=47" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>
