@@ -416,7 +416,7 @@ const App = {
     // photo for a child.
     const headerPhoto = document.getElementById('header-photo');
     if (headerPhoto) {
-      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=47';
+      headerPhoto.src = (this.isTeacher() ? 'photo.jpeg' : 'students.jpeg') + '?v=48';
       headerPhoto.alt = this.isTeacher() ? 'Amy老师' : '同学';
     }
     // Update class badge in header
@@ -570,8 +570,14 @@ const App = {
     var youdao = 'https://dict.youdao.com/dictvoice?audio=' + encoded + '&type=2';
     var baidu  = 'https://fanyi.baidu.com/gettts?lan=en&text=' + encoded + '&spd=3&source=web';
     var ownTts = '/api/tts?text=' + encoded;
-    var ttsUrl      = isSentence ? baidu  : youdao;
-    var fallbackUrl = isSentence ? ownTts : baidu;
+    // Sentences go to our own origin FIRST. Routing them to Baidu instead of
+    // Youdao fixed nothing on the phones — words still played and sentences
+    // still did not, on both iOS Safari and Xiaomi's browser. Both remaining
+    // suspects (a blocked third-party host, a cross-origin media restriction)
+    // disappear when the audio comes from the same origin as the page.
+    // Words keep Youdao: that path is the one already known to work.
+    var ttsUrl      = isSentence ? ownTts : youdao;
+    var fallbackUrl = isSentence ? baidu  : baidu;
 
     var timeoutId = null;
     var absoluteTimeout = null;
@@ -3369,8 +3375,8 @@ const App = {
   //
   // Coverage is the common everyday set, which is what graded readers use.
   // A character that is not in the table simply stays as it is.
-  TRAD: '這來個們時們國學會後間對開實發當經動樣進點種說實過還將產業務員來機關與體現們爾種學裡對後隻歡歡喜聽讀書愛媽爸媽學運動風雲電話語問題長長門馬鳥魚鳥飛車東頭興爾龍龜歲兒兒歲數樓錢銀鐵鋼銅顏線紙筆畫圖書園場農漁牧獵豬雞鴨鵝馬羊狗貓蟲蝦蟹龍鳳凰麗華貴賤買賣價貨財貧富續斷續轉輪車軍陣戰爭勝負將帥兵刀劍槍砲彈藥醫藥療養護衛檢驗診斷術學習慣練習題號碼碼頭條約結約續紹紅綠藍紫綢緞織繡縫繩結網絡線續維綜統緊繼績纖鮮鹽醬醋糖麵飯餅餃麥穀糧倉庫儲藏積蓄豐盈虧損盡歸還償贈賞罰責備懲獎勵勸諫諮詢議論談話語言詞語謠謎謝誠謹謙讓認識記憶讀誦講課試驗證據調查訪問訊詢誤誤譯譯詩詞誌誌湯姆麼沒總聲藝豐辦壓陽陰際隨險難靜華萬與專屬層屆屬島嶺峽帶幫幾廣廳應廠處備複雜',
-  SIMP: '这来个们时们国学会后间对开实发当经动样进点种说实过还将产业务员来机关与体现们尔种学里对后只欢欢喜听读书爱妈爸妈学运动风云电话语问题长长门马鸟鱼鸟飞车东头兴尔龙龟岁儿儿岁数楼钱银铁钢铜颜线纸笔画图书园场农渔牧猎猪鸡鸭鹅马羊狗猫虫虾蟹龙凤凰丽华贵贱买卖价货财贫富续断续转轮车军阵战争胜负将帅兵刀剑枪炮弹药医药疗养护卫检验诊断术学习惯练习题号码码头条约结约续绍红绿蓝紫绸缎织绣缝绳结网络线续维综统紧继绩纤鲜盐酱醋糖面饭饼饺麦谷粮仓库储藏积蓄丰盈亏损尽归还偿赠赏罚责备惩奖励劝谏咨询议论谈话语言词语谣谜谢诚谨谦让认识记忆读诵讲课试验证据调查访问讯询误误译译诗词志志汤姆么没总声艺丰办压阳阴际随险难静华万与专属层届属岛岭峡带帮几广厅应厂处备复杂',
+  TRAD: '這來個們時們國學會後間對開實發當經動樣進點種說實過還將產業務員來機關與體現們爾種學裡對後隻歡歡喜聽讀書愛媽爸媽學運動風雲電話語問題長長門馬鳥魚鳥飛車東頭興爾龍龜歲兒兒歲數樓錢銀鐵鋼銅顏線紙筆畫圖書園場農漁牧獵豬雞鴨鵝馬羊狗貓蟲蝦蟹龍鳳凰麗華貴賤買賣價貨財貧富續斷續轉輪車軍陣戰爭勝負將帥兵刀劍槍砲彈藥醫藥療養護衛檢驗診斷術學習慣練習題號碼碼頭條約結約續紹紅綠藍紫綢緞織繡縫繩結網絡線續維綜統緊繼績纖鮮鹽醬醋糖麵飯餅餃麥穀糧倉庫儲藏積蓄豐盈虧損盡歸還償贈賞罰責備懲獎勵勸諫諮詢議論談話語言詞語謠謎謝誠謹謙讓認識記憶讀誦講課試驗證據調查訪問訊詢誤誤譯譯詩詞誌誌湯姆麼沒總聲藝豐辦壓陽陰際隨險難靜華萬與專屬層屆屬島嶺峽帶幫幾廣廳應廠處備複雜賦稟賽獎勵誇讚讓態勢豐績優劣佳績勤懇認眞聰穎穎悟嚴謹積極熱愛興趣趣味關註註意專註堅持毅力鼓勵讚揚驕傲滿意輕鬆愉快興奮激動溫暖親切熱情開朗樂觀積極',
+  SIMP: '这来个们时们国学会后间对开实发当经动样进点种说实过还将产业务员来机关与体现们尔种学里对后只欢欢喜听读书爱妈爸妈学运动风云电话语问题长长门马鸟鱼鸟飞车东头兴尔龙龟岁儿儿岁数楼钱银铁钢铜颜线纸笔画图书园场农渔牧猎猪鸡鸭鹅马羊狗猫虫虾蟹龙凤凰丽华贵贱买卖价货财贫富续断续转轮车军阵战争胜负将帅兵刀剑枪炮弹药医药疗养护卫检验诊断术学习惯练习题号码码头条约结约续绍红绿蓝紫绸缎织绣缝绳结网络线续维综统紧继绩纤鲜盐酱醋糖面饭饼饺麦谷粮仓库储藏积蓄丰盈亏损尽归还偿赠赏罚责备惩奖励劝谏咨询议论谈话语言词语谣谜谢诚谨谦让认识记忆读诵讲课试验证据调查访问讯询误误译译诗词志志汤姆么没总声艺丰办压阳阴际随险难静华万与专属层届属岛岭峡带帮几广厅应厂处备复杂赋禀赛奖励夸赞让态势丰绩优劣佳绩勤恳认真聪颖颖悟严谨积极热爱兴趣趣味关注注意专注坚持毅力鼓励赞扬骄傲满意轻松愉快兴奋激动温暖亲切热情开朗乐观积极',
 
   _toSimplified(text) {
     if (!this._tsMap) {
@@ -3384,10 +3390,39 @@ const App = {
     return out;
   },
 
+  // Meaning, not wording. 「非常有天赋」 and 「很有天赋」 are the same answer,
+  // but as character strings they overlap only 3 of 5. Degree adverbs and
+  // near-synonyms are folded to one form, and grammatical particles dropped,
+  // before anything is compared — otherwise a correct translation phrased
+  // differently from the reference is marked down for no good reason.
+  ZH_FOLD: {
+    // degree
+    '非常':'很','十分':'很','特别':'很','格外':'很','相当':'很','挺':'很','极其':'很',
+    '极为':'很','异常':'很','尤其':'很','分外':'很','好':'很',
+    // frequency / time
+    '经常':'常','时常':'常','往往':'常','总是':'常','老是':'常',
+    '每日':'每天','天天':'每天','日常':'每天',
+    // like / love
+    '喜爱':'喜欢','热爱':'喜欢','爱好':'喜欢','钟爱':'喜欢','酷爱':'喜欢',
+    // ability
+    '天分':'天赋','才能':'天赋','才华':'天赋','资质':'天赋',
+    // common nouns
+    '男孩子':'男孩','小男孩':'男孩','女孩子':'女孩','小女孩':'女孩',
+    '足球运动':'足球','体育运动':'运动','体育':'运动',
+    // verbs
+    '喜欢做':'喜欢','进行':'','从事':'',
+  },
+  ZH_DROP: '的了着地得呢吧啊吗呀嘛哦噢欸',
+
   _zhChars(text) {
-    return this._toSimplified(String(text || ''))
-      .replace(/[^\u4e00-\u9fa5]/g, '')     // keep Han characters only
-      .split('');
+    let t = this._toSimplified(String(text || ''));
+    // Longest keys first so 「非常」 is folded before 「常」 can match inside it.
+    const keys = Object.keys(this.ZH_FOLD).sort((a, b) => b.length - a.length);
+    for (const k of keys) t = t.split(k).join(this.ZH_FOLD[k]);
+    const drop = this.ZH_DROP;
+    return t.replace(/[^\u4e00-\u9fa5]/g, '')
+      .split('')
+      .filter(c => drop.indexOf(c) < 0);
   },
 
   // Longest common subsequence over characters. Translation is free-form —
@@ -4388,7 +4423,7 @@ const App = {
     this.showModal(`
       <div class="modal-header"><div class="modal-title">🔗 邀请加入班级</div><button class="modal-close" onclick="App.closeModal()">&times;</button></div>
       <div class="modal-body invite-content">
-        <div class="qr-placeholder"><img src="photo.jpeg?v=47" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
+        <div class="qr-placeholder"><img src="photo.jpeg?v=48" alt="Amy老师英语打卡" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>
         <p class="text-sub fs-12">扫码或分享链接加入</p>
         <div class="invite-link">${link}</div>
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${link}');alert('链接已复制')">📋 复制链接</button>
