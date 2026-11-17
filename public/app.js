@@ -33,6 +33,9 @@ const App = {
     await this.loadData();
     this.loadVoices();
     if (typeof Cloud !== 'undefined') Cloud.init();
+    // Swap in fresh questions for anything this child has already answered,
+    // so a new week never replays old questions (teacher can reset this).
+    this._applyQuestionDedup();
     // WeChat built-in browser: unlock audio as soon as WeixinJSBridge is
     // ready. On WeChat, the first play() must happen inside this callback
     // or a user gesture — this covers the "opened app but never tapped"
@@ -207,6 +210,15 @@ const App = {
   _recordAnswer(dayIdx, moduleIdx, qIdx, value, correct) {
     if (this.isTeacher() || !this.state.phone) return;
     const sid = this._myStudentId();
+    // Remember which question this child has seen, so the bank can swap in
+    // something new next time instead of repeating (see _applyQuestionDedup).
+    const mod0 = (HOMEWORK_DATA[dayIdx] || {}).modules || [];
+    const m0 = mod0[moduleIdx];
+    const qObj = m0 && m0.questions ? m0.questions[qIdx] : null;
+    if (qObj && qObj.id) Api.markQuestionSeen(qObj.id);
+    if (m0 && m0.type === 'vocabulary_game' && m0.words && m0.words[qIdx]) {
+      Api.markQuestionSeen('word:' + m0.words[qIdx].word);
+    }
     Api.saveAnswer(sid, dayIdx, moduleIdx, qIdx, value, correct)
       .then(res => res.recorded
         ? Api.saveCheckin(sid, dayIdx, this._countDayQuestions(dayIdx))
@@ -224,6 +236,67 @@ const App = {
     // child can read the explanation and move on when they are ready.
     if (correct) this._scheduleAdvance(1300);
     else clearTimeout(this._advanceTimer);
+  },
+
+  // ===== Question dedup: seen questions never repeat =====
+  // doc.seenQuestions maps question id (or "word:<word>") -> last-seen time,
+  // synced to cloud with the other homework collections. At startup, the
+  // active week bank's self-contained modules swap in fresh questions from
+  // the other banks when everything visible would be a repeat. Passage-bound
+  // modules (reading, cloze) are excluded: their questions quote the passage.
+  _applyQuestionDedup() {
+    try {
+      if (this.isTeacher()) return;              // teacher sees the bank as-is
+      if (typeof window.__ALL_BANKS === 'undefined') return;
+      const banks = window.__ALL_BANKS;
+      const activeId = window.__bankId || 0;
+      const d = Api.doc();
+      const seen = d.seenQuestions || (d.seenQuestions = {});
+      const STANDALONE = { speaking: 1, grammar: 1, multiple_choice: 1, listening: 1, tense: 1, ket_pet: 1, vocabulary_game: 1 };
+      let swapped = 0;
+      HOMEWORK_DATA.forEach((day, di) => {
+        (day.modules || []).forEach((m, mi) => {
+          if (!STANDALONE[m.type]) return;
+          // Fresh items of the same slot from the other banks.
+          const freshQ = [];
+          const freshW = [];
+          banks.forEach((b, bi) => {
+            if (bi === activeId) return;
+            const mm = b[di] && b[di].modules && b[di].modules[mi];
+            if (!mm || mm.type !== m.type) return;
+            (mm.questions || []).forEach(q => { if (q && q.id && !seen[q.id]) freshQ.push(q); });
+            if (m.type === 'vocabulary_game') {
+              (mm.words || []).forEach(w => {
+                if (w && w.word && !seen['word:' + w.word]) freshW.push(w);
+              });
+            }
+          });
+          if (m.type === 'vocabulary_game') {
+            m.words = m.words.map(w => {
+              if (!seen['word:' + w.word] || !freshW.length) return w;
+              swapped++;
+              return freshW.shift();
+            });
+          } else {
+            m.questions = m.questions.map(q => {
+              if (!seen[q.id] || !freshQ.length) return q;
+              swapped++;
+              return freshQ.shift();
+            });
+          }
+        });
+      });
+      if (swapped) console.log('Question dedup: swapped in ' + swapped + ' fresh items');
+    } catch (e) { console.warn('Question dedup failed:', e); }
+  },
+
+  // Teacher control: "除非我要求出现" — clearing the seen-memory makes the
+  // bank replay original questions until new ones are learned again.
+  async resetSeenQuestions() {
+    const d = Api.doc();
+    d.seenQuestions = {};
+    Api.flushStore();
+    this.showToast('✅ 出题记录已清空，下次刷新将重新出全套题', 'success');
   },
 
   isWeChat() {
@@ -568,6 +641,18 @@ const App = {
     // did not. Sentences therefore go to Baidu first, with our own same-origin
     // endpoint behind it.
     var isSentence = /\s/.test(cleanText.trim());
+
+    // WORDS take the instant local path: the dictionary endpoints (youdao /
+    // baidu) are cross-origin network fetches, and on a slow phone connection
+    // a word tap sat waiting on the network or played nothing at all. The
+    // device's own speech synthesis starts immediately and works offline;
+    // network audio is now only the fallback. Sentences keep the original
+    // same-origin-first path below.
+    if (!isSentence) {
+      this._speakWordInstant(cleanText, opts, myToken);
+      return;
+    }
+
     var youdao = 'https://dict.youdao.com/dictvoice?audio=' + encoded + '&type=2';
     var baidu  = 'https://fanyi.baidu.com/gettts?lan=en&text=' + encoded + '&spd=3&source=web';
     var ownTts = '/api/tts?text=' + encoded;
@@ -811,6 +896,126 @@ const App = {
       this._showSpeakingIndicator(false);
       if (myToken === self._speakToken && self._ttsCallback) { self._ttsCallback(); self._ttsCallback = null; }
     }
+  },
+
+  // ===== Word tap: instant local speech + built-in Chinese meaning =====
+  // Called from every explicit word-tap button. Shows the meaning from the
+  // built-in word list (no network) and speaks via device synthesis, so a
+  // tap responds immediately even on a dead connection.
+  tapWord(word) {
+    var w = String(word || '').trim();
+    if (!w) return;
+    var meaning = this._localWordMeaning(w);
+    if (meaning) this.showToast(meaning, 'info');
+    this.speak(w);
+  },
+
+  // word -> "emoji 中文意思" map built once from every module's word list.
+  _localWordMeaning(word) {
+    if (!this._wordDict) {
+      var dict = {};
+      try {
+        HOMEWORK_DATA.forEach(function(day) {
+          (day.modules || []).forEach(function(m) {
+            ((m && m.words) || []).forEach(function(w) {
+              if (w && w.word) {
+                dict[String(w.word).toLowerCase()] = (w.emoji ? w.emoji + ' ' : '') + (w.meaning || '');
+              }
+            });
+          });
+        });
+      } catch (e) {}
+      this._wordDict = dict;
+    }
+    return this._wordDict[String(word).trim().toLowerCase()] || null;
+  },
+
+  // Single word: device speechSynthesis FIRST (instant, offline). If this
+  // device has no usable English voice (onstart never fires / onerror),
+  // fall back to network audio once — never leave a tap silent.
+  _speakWordInstant(text, opts, myToken) {
+    var self = this;
+    if (window.speechSynthesis) {
+      var started = false, fellBack = false;
+      try {
+        window.speechSynthesis.cancel();
+        var u = new SpeechSynthesisUtterance(text);
+        u.lang = 'en-US';
+        u.rate = opts.rate || 0.85;
+        if (this.state.voices.length === 0) this.state.voices = window.speechSynthesis.getVoices() || [];
+        var chosen = this.state.voices.find(function(v) { return v.lang && v.lang.indexOf('en') === 0; });
+        if (chosen) u.voice = chosen;
+        var cleanup = function() {
+          if (self._wordFallbackTimer) { clearTimeout(self._wordFallbackTimer); self._wordFallbackTimer = null; }
+        };
+        u.onstart = function() {
+          if (myToken !== self._speakToken) return;
+          started = true; self._audioStarted = true; cleanup();
+        };
+        u.onend = function() {
+          if (myToken !== self._speakToken || fellBack) return;
+          cleanup();
+          self._showSpeakingIndicator(false);
+          if (self._ttsCallback) { self._ttsCallback(); self._ttsCallback = null; }
+        };
+        u.onerror = function() {
+          if (myToken !== self._speakToken || fellBack) return;
+          cleanup();
+          fellBack = true;
+          self._speakWordNetwork(text, opts, myToken);
+        };
+        window.speechSynthesis.speak(u);
+        // No voice started within 1.2s — this device has no local voice; go
+        // to the network instead of leaving the child waiting in silence.
+        this._wordFallbackTimer = setTimeout(function() {
+          if (myToken !== self._speakToken || fellBack || started) return;
+          fellBack = true;
+          try { window.speechSynthesis.cancel(); } catch (e) {}
+          self._speakWordNetwork(text, opts, myToken);
+        }, 1200);
+        return;
+      } catch (e) {}
+    }
+    this._speakWordNetwork(text, opts, myToken);
+  },
+
+  // Network fallback for one word: youdao, then baidu, then synthesis.
+  _speakWordNetwork(text, opts, myToken) {
+    var self = this;
+    var encoded = encodeURIComponent(text.trim());
+    var audioEl = document.getElementById('tts-player') || new Audio();
+    self._currentAudio = audioEl;
+    self._audioStarted = false;
+    var done = false;
+    var finish = function() {
+      if (done || myToken !== self._speakToken) return;
+      done = true;
+      self._showSpeakingIndicator(false);
+      self._currentAudio = null;
+      if (self._ttsCallback) { self._ttsCallback(); self._ttsCallback = null; }
+    };
+    var tryUrl = function(urls) {
+      if (!urls.length) { self._speakWithSynthesis(text, opts, myToken); return; }
+      audioEl.src = urls[0];
+      audioEl.onplaying = function() {
+        if (myToken !== self._speakToken) return;
+        self._audioStarted = true;
+      };
+      audioEl.onended = finish;
+      audioEl.onerror = function() {
+        if (myToken !== self._speakToken) return;
+        tryUrl(urls.slice(1));
+      };
+      audioEl.play().catch(function() { tryUrl(urls.slice(1)); });
+      // Hard cap: a single word never hangs longer than 4 seconds.
+      setTimeout(function() {
+        if (!done && !self._audioStarted && myToken === self._speakToken) tryUrl(urls.slice(1));
+      }, 4000);
+    };
+    tryUrl([
+      'https://dict.youdao.com/dictvoice?audio=' + encoded + '&type=2',
+      'https://fanyi.baidu.com/gettts?lan=en&text=' + encoded + '&spd=3&source=web',
+    ]);
   },
 
   // Show/hide speaking indicator
@@ -1555,6 +1760,12 @@ const App = {
   // ===== Teacher: Check-in Monitor =====
   renderCheckin() {
     let html = '<h2 style="color:var(--primary-dark);margin-bottom:12px">📊 打卡监控</h2>';
+    // Teacher control over the question bank: clear the seen-memory so the
+    // bank replays original questions ("除非我要求出现" repeats).
+    html += '<div class="card mb-16" style="background:var(--bg);padding:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+      + '<span style="font-size:13px;color:var(--text-sub)">题库：自动避开做过的题（第' + (window.__weekNum !== undefined ? window.__weekNum + 1 : 1) + '周 · 套题' + ((window.__bankId || 0) + 1) + '）</span>'
+      + '<button class="btn btn-outline btn-sm" onclick="App.resetSeenQuestions()">🔄 重置出题记录</button>'
+      + '</div>';
     // Note: no auto-generated demo data - show real data only
     // Summary
     html += '<div class="stat-row mb-16">';
@@ -2208,6 +2419,29 @@ const App = {
     return a;
   },
 
+  // Stable per-instance shuffle for EVERY choice question. Kids worked out
+  // that the correct option kept landing on the same positions; this makes
+  // the position genuinely random each time a question is shown, while the
+  // cache keeps one shown instance stable across re-renders (feedback
+  // highlights would otherwise jump around mid-question).
+  _optionShuffleCache: {},
+  _shuffledOptions(key, options, answer) {
+    var cache = this._optionShuffleCache;
+    if (cache[key]) return cache[key];
+    var indices = options.map(function(_, i) { return i; });
+    for (var i = indices.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = indices[i]; indices[i] = indices[j]; indices[j] = t;
+    }
+    var res = {
+      options: indices.map(function(i) { return options[i]; }),
+      map: indices,                          // displayed index -> original index
+      answer: indices.indexOf(answer)        // displayed index of the correct option
+    };
+    cache[key] = res;
+    return res;
+  },
+
   // Get shuffled options for a speaking question, with mapping to original answer index
   _getShuffledSpeakingOptions(q) {
     var origOptions = q.options;
@@ -2227,10 +2461,11 @@ const App = {
     if (!this._speakingShuffle) this._speakingShuffle = {};
     this._speakingShuffle[mi + '-' + qi] = shuffled;
 
-    let html = '<div class="speaking-card">';
-    html += '<div class="auto-read-badge"><svg class="icon icon-sm speaking-anim"><use href="#i-sound"/></svg> 正在朗读…</div>';
-    html += '<div class="fs-12 text-sub">第' + (qi+1) + '题 / 共' + m.questions.length + '题</div>';
-    html += '<div class="vocab-progress mt-8"><div class="fill" style="width:' + (qi/m.questions.length*100) + '%"></div></div>';
+    let html = '<div class="speaking-card" id="sp-card-' + mi + '">';
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px">'
+         + '<div class="auto-read-badge" style="margin-bottom:0"><svg class="icon icon-sm speaking-anim"><use href="#i-sound"/></svg> 正在朗读…</div>'
+         + '<div class="fs-12 text-sub">第' + (qi+1) + '题 / 共' + m.questions.length + '题</div></div>';
+    html += '<div class="vocab-progress" style="margin-bottom:4px"><div class="fill" style="width:' + (qi/m.questions.length*100) + '%"></div></div>';
     html += '<div class="speak-sentence">' + q.sentence + '</div>';
     html += '<div class="speak-sentence-cn">' + q.sentence_cn + '</div>';
     html += '<button class="speak-btn play" onclick="App.playSentence(' + mi + ',' + qi + ',\'' + dayIdx + '\')"><svg class="icon icon-sm"><use href="#i-sound"/></svg> 重新听</button>';
@@ -2316,6 +2551,8 @@ const App = {
         readArea.innerHTML = '<div class="speak-record show"><p>❌ 回答错误。正确答案：' + options[correctAnswer] + '</p><p class="fs-12 text-sub">请先听朗读，再跟读练习</p><button class="speak-btn" onclick="App.startReadAlong(' + mi + ',' + qi + ',\'' + dayIdx + '\')">🎤 重新跟读</button></div>';
         readArea.innerHTML += '<div class="q-explanation show mt-8"><div class="cn">📖 ' + q.explanation_cn + '</div><div class="en">📘 ' + q.explanation_en + '</div></div>';
       }
+      // The 开始跟读 button just appeared — bring it onto the screen.
+      if (readArea.scrollIntoView) readArea.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }});
   },
 
@@ -2336,16 +2573,23 @@ const App = {
     this._spRounds[rkey] = (this._spRounds[rkey] || 0) + 1;
     this._spRound = this._spRounds[rkey];
 
-    // Show recording UI immediately with animation
-    readArea.innerHTML = '<div class="speak-record show" style="text-align:center">' +
-      '<div class="recording-indicator"><div class="rec-mic">🎤</div><div class="rec-pulse"></div></div>' +
-      '<p style="font-size:16px;font-weight:600;color:var(--primary);margin:12px 0 4px">正在录音...</p>' +
-      '<p class="fs-12 text-sub">请大声朗读下面的句子</p>' +
-      '<div class="speak-sentence" style="font-size:18px;margin:12px 0;color:var(--text)">' + q.sentence + '</div>' +
-      '<div class="rec-timer" id="rec-timer-' + mi + '">0秒</div>' +
-      '<div class="fs-12 text-sub" id="asr-hint-' + mi + '" style="min-height:18px;margin-top:6px"></div>' +
-      '<button class="speak-btn" style="background:var(--danger);margin-top:12px" onclick="App._stopReading(' + mi + ',' + qi + ',\'' + dayIdx + '\')">结束朗读</button>' +
-      '</div>';
+    // Recording mode: hide the rest of the card so the sentence and the
+    // record controls share one screen — the child never scrolls mid-read.
+    var card = document.getElementById('sp-card-' + mi);
+    if (card) card.classList.add('is-recording');
+
+    // Compact panel: the sentence stays on top (tap to hear it again),
+    // the mic, timer and stop button sit right under it.
+    readArea.innerHTML = '<div class="speak-record show rec-panel" style="text-align:center">'
+      + '<div class="rec-panel-sentence" onclick="App.speak(\'' + q.sentence.replace(/'/g,"\\'") + '\')" title="点一下再听一遍">' + q.sentence + '</div>'
+      + '<div class="rec-panel-row">'
+      + '<div class="recording-indicator rec-sm"><div class="rec-mic">🎤</div><div class="rec-pulse"></div></div>'
+      + '<div class="rec-info"><div style="font-size:14px;font-weight:600;color:var(--danger)">正在录音… <span id="rec-timer-' + mi + '">0秒</span></div>'
+      + '<div class="fs-12 text-sub">大声朗读上面的句子，读完点下方按钮</div></div>'
+      + '</div>'
+      + '<div class="fs-12 text-sub" id="asr-hint-' + mi + '" style="min-height:16px;margin:2px 0 8px"></div>'
+      + '<button class="speak-btn" style="background:var(--danger)" onclick="App._stopReading(' + mi + ',' + qi + ',\'' + dayIdx + '\')">结束朗读</button>'
+      + '</div>';
 
     // Start timer
     var recSeconds = 0;
@@ -2363,11 +2607,12 @@ const App = {
     // score) depending on which phone they picked up, and on most of them it
     // failed outright. One path means one behaviour everywhere.
 
-    // Hard cap so a forgotten session cannot record forever.
+    // Hard cap so a forgotten session cannot record forever. Generous now:
+    // how long the child reads is their own decision (tap 结束朗读 when done).
     clearTimeout(self._readCapTimer);
     self._readCapTimer = setTimeout(function() {
       self._finishRead(mi, qi, dayIdx);
-    }, 20000);
+    }, 120000);
   },
 
   // The single place a read-along ends: child taps 结束朗读, recognition
@@ -2381,6 +2626,9 @@ const App = {
     const m = HOMEWORK_DATA[dayIdx].modules[mi];
     const q = m.questions[qi];
     const readArea = document.getElementById('sp-read-' + mi);
+    // Recording is over — bring the rest of the card back.
+    var card = document.getElementById('sp-card-' + mi);
+    if (card) card.classList.remove('is-recording');
 
     // Release the mic and get the WAV. Everything below has the audio in hand,
     // so nothing the network does can lose the child's work.
@@ -2463,6 +2711,9 @@ const App = {
     html += '<div id="sp-clip-' + mi + '" class="mt-8"></div>';
     html += '</div>';
     readArea.innerHTML = html;
+    // The result (score + 重新跟读/下一题 buttons) must be on screen without
+    // any scrolling.
+    if (readArea.scrollIntoView) readArea.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     this._persistSpeakingClip(mi, qi, dayIdx, q, score, {
       spoken: spoken, source: 'asr',
       okCount: a.ok, wordTotal: a.total,
@@ -2489,6 +2740,7 @@ const App = {
     html += '</div>';
     html += '</div>';
     readArea.innerHTML = html;
+    if (readArea.scrollIntoView) readArea.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   },
 
   // Handle self-assessment score
@@ -2515,6 +2767,7 @@ const App = {
     html += '<div id="sp-clip-' + mi + '" class="mt-8"></div>';
     html += '</div>';
     readArea.innerHTML = html;
+    if (readArea.scrollIntoView) readArea.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     this._persistSpeakingClip(mi, qi, dayIdx, q, score, { source: 'self' });
   },
 
@@ -2760,6 +3013,8 @@ const App = {
     this.state.learnedWords['day_' + dayIdx] = slim;
     // Fire-and-forget: the in-memory copy above is what the renderer reads.
     Api.saveLearnedWords(dayIdx, slim);
+    // Mark these words as seen so dedup never serves them again.
+    slim.forEach(w => Api.markQuestionSeen('word:' + w.word));
   },
 
   // Get learned words for a specific day. Stays synchronous — it is called
@@ -2777,9 +3032,9 @@ const App = {
     html += '<div class="vr-sub">先复习昨天学的' + reviewWords.length + '个单词，再学新词</div>';
     reviewWords.forEach(function(w, i) {
       html += '<div class="vr-word-item">';
-      html += '<span class="vrw-emoji tap-speak-sm" onclick="App.speak(\'' + w.word.replace(/'/g, "\\'") + '\')" title="点一下听发音">' + (w.emoji || '📖') + '</span>';
+      html += '<span class="vrw-emoji tap-speak-sm" onclick="App.tapWord(\'' + w.word.replace(/'/g, "\\'") + '\')" title="点一下听发音">' + (w.emoji || '📖') + '</span>';
       html += '<div class="vrw-info"><div class="vrw-word">' + w.word + '</div><div class="vrw-meaning">' + w.meaning + '</div></div>';
-      html += '<button class="vrw-play" onclick="App.speak(\'' + w.word.replace(/'/g, "\\'") + '\')" aria-label="听发音"><svg class="icon icon-sm"><use href="#i-sound"/></svg></button>';
+      html += '<button class="vrw-play" onclick="App.tapWord(\'' + w.word.replace(/'/g, "\\'") + '\')" aria-label="听发音"><svg class="icon icon-sm"><use href="#i-sound"/></svg></button>';
       html += '</div>';
     });
     html += '<button class="vocab-btn" style="margin-top:16px" onclick="App._finishReview(' + mi + ',' + dayIdx + ')">复习完成，开始学新词 →</button>';
@@ -2811,7 +3066,7 @@ const App = {
       html += '<div class="vc-score">答对 ' + this.state.vocabScore + ' / ' + maxScore + ' 题（' + scorePct + '%）</div>';
       html += '<div class="vc-word-list">';
       m.words.forEach(function(w) {
-        html += '<div class="vc-word-item"><span class="vcw-emoji tap-speak-sm" onclick="App.speak(\'' + w.word.replace(/'/g, "\\'") + '\')" title="点一下听发音">' + w.emoji + '</span><div class="vcw-info"><div class="vcw-word">' + w.word + '</div><div class="vcw-meaning">' + w.meaning + '</div></div><button class="vrw-play" onclick="App.speak(\'' + w.word.replace(/'/g, "\\'") + '\')" aria-label="听发音"><svg class="icon icon-sm"><use href="#i-sound"/></svg></button></div>';
+        html += '<div class="vc-word-item"><span class="vcw-emoji tap-speak-sm" onclick="App.tapWord(\'' + w.word.replace(/'/g, "\\'") + '\')" title="点一下听发音">' + w.emoji + '</span><div class="vcw-info"><div class="vcw-word">' + w.word + '</div><div class="vcw-meaning">' + w.meaning + '</div></div><button class="vrw-play" onclick="App.tapWord(\'' + w.word.replace(/'/g, "\\'") + '\')" aria-label="听发音"><svg class="icon icon-sm"><use href="#i-sound"/></svg></button></div>';
       });
       html += '</div>';
       html += '<div style="font-size:13px;color:var(--text-sub);margin-top:8px">明天学习新单词时，会先复习这' + m.words.length + '个单词哦</div>';
@@ -2835,7 +3090,7 @@ const App = {
       html += '<div class="vocab-phonetic">' + word.phonetic + '</div>';
       html += '<div class="vocab-meaning">' + word.meaning + '</div>';
       html += '<div class="vocab-example">"' + word.example_en + '"<br>' + word.example_cn + '</div>';
-      html += '<button class="vocab-btn" onclick="App.speak(\'' + word.word.replace(/'/g,"\\'") + '\')">🔊 听发音</button>';
+      html += '<button class="vocab-btn" onclick="App.tapWord(\'' + word.word.replace(/'/g,"\\'") + '\')">🔊 听发音</button>';
       html += '<button class="vocab-btn" onclick="App.nextVocabStage(' + mi + ',' + dayIdx + ',' + m.words.length + ',' + word.stages.length + ')">我学会了 →</button>';
       // Auto-read the word
       this.autoSpeak(word.word);
@@ -2844,8 +3099,9 @@ const App = {
       html += '<div class="vocab-meaning">' + stage.prompt + '</div>';
       html += this._wordImage(word, true);
       html += '<div class="vocab-options" id="vo-' + mi + '" style="opacity:0.4;pointer-events:none">';
-      stage.options.forEach((opt, oi) => {
-        html += '<div class="vocab-option-card" onclick="App.checkVocabAnswer(' + mi + ',' + oi + ',' + stage.answer + ',' + dayIdx + ',' + m.words.length + ',' + word.stages.length + ')">' + opt + '</div>';
+      var shImg = this._shuffledOptions('v' + mi + '-' + wIdx + '-' + sIdx, stage.options, stage.answer);
+      shImg.options.forEach((opt, oi) => {
+        html += '<div class="vocab-option-card" onclick="App.checkVocabAnswer(' + mi + ',' + oi + ',' + shImg.answer + ',' + dayIdx + ',' + m.words.length + ',' + word.stages.length + ')">' + opt + '</div>';
       });
       html += '</div>';
       html += '<div class="listen-wait" id="vw-' + mi + '" style="text-align:center;padding:8px;color:var(--text-sub);font-size:12px">⏳ 请先听完整朗读，再选择答案</div>';
@@ -2863,8 +3119,9 @@ const App = {
       html += '<div class="vocab-phonetic">' + word.phonetic + '</div>';
       html += '<div class="vocab-meaning">' + stage.prompt + '</div>';
       html += '<div class="vocab-options" id="vo-' + mi + '" style="opacity:0.4;pointer-events:none">';
-      stage.options.forEach((opt, oi) => {
-        html += '<div class="vocab-option-card" style="font-size:16px;padding:14px 8px" onclick="App.checkVocabAnswer(' + mi + ',' + oi + ',' + stage.answer + ',' + dayIdx + ',' + m.words.length + ',' + word.stages.length + ')">' + opt + '</div>';
+      var shMean = this._shuffledOptions('v' + mi + '-' + wIdx + '-' + sIdx, stage.options, stage.answer);
+      shMean.options.forEach((opt, oi) => {
+        html += '<div class="vocab-option-card" style="font-size:16px;padding:14px 8px" onclick="App.checkVocabAnswer(' + mi + ',' + oi + ',' + shMean.answer + ',' + dayIdx + ',' + m.words.length + ',' + word.stages.length + ')">' + opt + '</div>';
       });
       html += '</div>';
       html += '<div class="listen-wait" id="vw-' + mi + '" style="text-align:center;padding:8px;color:var(--text-sub);font-size:12px">⏳ 请先听完整朗读，再选择答案</div>';
@@ -3080,7 +3337,7 @@ const App = {
     var w = String(word.word || '').replace(/'/g, "\\'");
     return '<div class="vocab-emoji-card tap-speak"'
          + (big ? ' style="width:100px;height:100px;font-size:52px"' : '')
-         + ' onclick="App.speak(\'' + w + '\')" title="点一下听发音"'
+         + ' onclick="App.tapWord(\'' + w + '\')" title="点一下听发音"'
          + ' role="button" aria-label="听 ' + w + ' 的发音">'
          + word.emoji + '<span class="tap-speak-badge"><svg class="icon icon-sm"><use href="#i-sound"/></svg></span></div>';
   },
@@ -3121,11 +3378,10 @@ const App = {
     html += '<div class="sent-progress">翻译 ' + (si + 1) + ' / ' + pairs.length + ' 句</div>';
     html += '<div class="sent-text tap-speak-sm" onclick="App.speak(\''
          + pair.en.replace(/'/g, "\\'") + '\')" title="点一下听英文">' + pair.en + '</div>';
-    html += '<div class="sent-hint">用中文说出这句话的意思</div>';
+    html += '<div class="sent-hint">点下面的按钮开始录音，读完再点一下结束</div>';
     html += '<button class="word-read-btn hold-target" id="trs-btn-' + mi + '-' + si + '"'
-         + ' onpointerdown="App._translateSentence(event,' + mi + ',' + si + ')"'
-         + ' onpointerup="App._holdEnd(event)" onpointercancel="App._holdEnd(event)"'
-         + ' oncontextmenu="return false">按住说中文</button>';
+         + ' onclick="App._translateSentence(event,' + mi + ',' + si + ')"'
+         + ' oncontextmenu="return false">🎤 点我开始说</button>';
     html += '<div id="trs-status-' + mi + '-' + si + '"></div>';
     html += '<div id="trs-result-' + mi + '-' + si + '"></div>';
     html += '</div>';
@@ -3133,6 +3389,8 @@ const App = {
   },
 
   _translateSentence(ev, mi, si) {
+    // Tap toggle: first tap starts recording, second tap stops it.
+    if (this._holdKey === 'trs-' + mi + '-' + si) return this._holdEnd();
     const self = this;
     const m = HOMEWORK_DATA[this.state.currentDay].modules[mi];
     const pair = (this._pairSentences(m) || [])[si];
@@ -3220,11 +3478,10 @@ const App = {
     html += '<div class="sent-progress">第 ' + (si + 1) + ' / ' + sents.length + ' 句</div>';
     html += '<div class="sent-text tap-speak-sm" id="sent-' + mi + '-' + si + '"'
          + ' onclick="App.speak(\'' + esc + '\')" title="点一下听朗读">' + sent + '</div>';
-    html += '<div class="sent-hint">先点句子听一遍，再按住下面的按钮跟读</div>';
+    html += '<div class="sent-hint">先点句子听一遍，再点下面的按钮跟读</div>';
     html += '<button class="word-read-btn hold-target" id="sent-btn-' + mi + '-' + si + '"'
-         + ' onpointerdown="App._readSentence(event,' + mi + ',' + si + ')"'
-         + ' onpointerup="App._holdEnd(event)" onpointercancel="App._holdEnd(event)"'
-         + ' oncontextmenu="return false">按住跟读</button>';
+         + ' onclick="App._readSentence(event,' + mi + ',' + si + ')"'
+         + ' oncontextmenu="return false">🎤 点我开始读</button>';
     html += '<div id="sent-status-' + mi + '-' + si + '"></div>';
     html += '<div id="sent-result-' + mi + '-' + si + '"></div>';
     html += '</div>';
@@ -3238,6 +3495,8 @@ const App = {
   },
 
   _readSentence(ev, mi, si) {
+    // Tap toggle: first tap starts recording, second tap stops it.
+    if (this._holdKey === 'sent-' + mi + '-' + si) return this._holdEnd();
     const self = this;
     const m = HOMEWORK_DATA[this.state.currentDay].modules[mi];
     const sent = this._splitSentences(m.passage)[si] || '';
@@ -3603,13 +3862,12 @@ const App = {
     html += this._wordImage(word, true);
     html += '<div class="vocab-word">' + word.word + '</div>';
     html += '<div class="vocab-phonetic">' + word.phonetic + '</div>';
-    html += '<div class="read-instruction">按住每个格子读，松开结束</div>';
+    html += '<div class="read-instruction">点一下格子开始读，读完再点一下结束</div>';
 
     html += '<div class="spell-row" id="spell-row-' + mi + '">';
     units.forEach(function(u, i) {
       html += '<div class="spell-box hold-target" id="spell-' + mi + '-' + i + '"'
-           + ' onpointerdown="App._readUnit(event,' + mi + ',' + i + ')"'
-           + ' onpointerup="App._holdEnd(event)" onpointercancel="App._holdEnd(event)"'
+           + ' onclick="App._readUnit(event,' + mi + ',' + i + ')"'
            + ' oncontextmenu="return false">'
            + (kind === 'letter' ? String(u).toUpperCase() : u) + '</div>';
     });
@@ -3617,8 +3875,7 @@ const App = {
     // still sized to the word, not stretched across the row.
     html += '<div class="spell-break"></div>';
     html += '<div class="spell-box spell-word hold-target" id="spell-word-' + mi + '"'
-         + ' onpointerdown="App._readFullWord(event,' + mi + ')"'
-         + ' onpointerup="App._holdEnd(event)" onpointercancel="App._holdEnd(event)"'
+         + ' onclick="App._readFullWord(event,' + mi + ')"'
          + ' oncontextmenu="return false">' + word.word + '</div>';
     html += '</div>';
 
@@ -3631,6 +3888,8 @@ const App = {
   },
 
   _readUnit(ev, mi, idx) {
+    // Tap toggle: first tap starts recording, second tap stops it.
+    if (this._holdKey === 'unit-' + mi + '-' + idx) return this._holdEnd();
     var self = this;
     var el = document.getElementById('spell-' + mi + '-' + idx);
     if (!el) return;
@@ -3673,6 +3932,8 @@ const App = {
   },
 
   async _readFullWord(ev, mi) {
+    // Tap toggle: first tap starts recording, second tap stops it.
+    if (this._holdKey === 'word-' + mi) return this._holdEnd();
     var self = this;
     var el = document.getElementById('spell-word-' + mi);
     var status = document.getElementById('spell-status-' + mi);
@@ -3768,21 +4029,22 @@ const App = {
     var row = document.getElementById('spell-row-' + mi);
     if (row) row.style.display = 'none';
     var instr = document.querySelector('.read-instruction');
-    if (instr) instr.textContent = '按住不放，把下面的字母和单词连着读一遍';
+    if (instr) instr.textContent = '点一下开始，把下面的字母和单词连着读一遍，读完再点一下结束';
 
     var html = '<div class="cont-seq">' + seq.map(function(x, i) {
       return '<span class="cont-item" id="cont-' + mi + '-' + i + '">' + x + '</span>';
     }).join('') + '</div>';
     html += '<button class="word-read-btn hold-target" id="cont-btn-' + mi + '"'
-         + ' onpointerdown="App._readContinuous(event,' + mi + ')"'
-         + ' onpointerup="App._holdEnd(event)" onpointercancel="App._holdEnd(event)"'
-         + ' oncontextmenu="return false">按住连续读</button>';
+         + ' onclick="App._readContinuous(event,' + mi + ')"'
+         + ' oncontextmenu="return false">🎤 点我开始连读</button>';
     html += '<div id="cont-status-' + mi + '"></div>';
     html += '<div id="cont-result-' + mi + '"></div>';
     if (area) area.innerHTML = html;
   },
 
   _readContinuous(ev, mi) {
+    // Tap toggle: first tap starts recording, second tap stops it.
+    if (this._holdKey === 'cont-' + mi) return this._holdEnd();
     var self = this;
     var sp = this._spell;
     var btn = document.getElementById('cont-btn-' + mi);
@@ -3878,7 +4140,7 @@ const App = {
 
     var setStatus = function(html) { if (statusEl) statusEl.innerHTML = html; };
     setStatus('<div class="tap-rec"><span class="tap-dot"></span>正在录「' + promptLabel + '」'
-            + '<span class="tap-hint">松开结束</span>'
+            + '<span class="tap-hint">读完再点一下结束</span>'
             + '<div class="rec-wave"><div class="rec-wave-bar" id="tap-wave" style="width:0%"></div></div></div>');
 
     if (!Recorder.supported()) {
@@ -3898,7 +4160,9 @@ const App = {
     });
 
     clearTimeout(this._holdCap);
-    this._holdCap = setTimeout(function() { self._holdEnd(); }, 15000);
+    // 3-minute safety cap only — how long to record is the student's call:
+    // they tap to start, read at their own pace, tap again when done.
+    this._holdCap = setTimeout(function() { self._holdEnd(); }, 180000);
   },
 
   async _holdEnd(ev) {
@@ -3911,9 +4175,9 @@ const App = {
     if (!key) return;
 
     // A stray tap is not an attempt — drop it rather than scoring silence.
-    if (heldMs < 220) {
+    if (heldMs < 300) {
       try { await Recorder.stop(); } catch (e) {}
-      if (statusEl) statusEl.innerHTML = '<div class="tap-result bad">按住不放才能录音</div>';
+      if (statusEl) statusEl.innerHTML = '<div class="tap-result bad">录得太短了，再试一次</div>';
       return;
     }
 
@@ -4217,9 +4481,13 @@ const App = {
     }
     html += '<div class="q-text">' + q.question + '</div>';
     if (q.options) {
+      // Options are position-shuffled per instance (see _shuffledOptions) so
+      // the correct answer never sits on a memorizable spot. selectAnswer
+      // maps the displayed index back to the original one for scoring.
+      var qsh = this._shuffledOptions('q' + mi + '-' + qi + '-' + dayIdx, q.options, q.answer);
       // Options disabled until reading finishes
       html += '<div class="q-options" id="qo-' + mi + '-' + qi + '" style="opacity:0.4;pointer-events:none">';
-      q.options.forEach((o, oi) => {
+      qsh.options.forEach((o, oi) => {
         html += '<div class="q-option" onclick="App.selectAnswer(' + mi + ',' + qi + ',' + oi + ',' + dayIdx + ')">' + String.fromCharCode(65+oi) + '. ' + o + '</div>';
       });
       html += '</div>';
@@ -4277,18 +4545,23 @@ const App = {
   selectAnswer(mi, qi, oi, dayIdx) {
     const m = HOMEWORK_DATA[dayIdx].modules[mi];
     const q = m.questions[qi];
-    const isCorrect = oi === q.answer;
-    this._recordAnswer(dayIdx, mi, qi, oi, isCorrect);
+    // oi is the DISPLAYED (shuffled) index; map back to the original option
+    // index for recording, and highlight by displayed positions.
+    const qsh = this._shuffledOptions('q' + mi + '-' + qi + '-' + dayIdx, q.options, q.answer);
+    const origOi = qsh.map[oi];
+    const shownCorrect = qsh.answer;
+    const isCorrect = oi === shownCorrect;
+    this._recordAnswer(dayIdx, mi, qi, origOi, isCorrect);
     const opts = document.querySelectorAll('#q-' + mi + '-' + qi + ' .q-option');
     opts.forEach((el, i) => {
       el.classList.remove('correct', 'wrong', 'selected');
       el.style.pointerEvents = 'none';
-      if (i === q.answer) el.classList.add('correct');
+      if (i === shownCorrect) el.classList.add('correct');
       if (i === oi && !isCorrect) el.classList.add('wrong');
     });
     const ansEl = document.getElementById('ans-' + mi + '-' + qi);
     ansEl.style.display = 'block';
-    ansEl.innerHTML = isCorrect ? '✅ 正确！' : '❌ 错误。正确答案：' + String.fromCharCode(65+q.answer);
+    ansEl.innerHTML = isCorrect ? '✅ 正确！' : '❌ 错误。正确答案：' + String.fromCharCode(65+shownCorrect);
     if (isCorrect) {
       this._playCorrectSound();
     } else {

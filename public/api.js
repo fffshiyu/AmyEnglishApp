@@ -52,7 +52,7 @@ const Store = {
 
   _empty() {
     return {
-      answers: {}, checkins: {}, errorBook: [],
+      answers: {}, checkins: {}, errorBook: [], seenQuestions: {},
       students: [], parentStudents: {}, classes: [],
     };
   },
@@ -89,6 +89,7 @@ const Store = {
         doc.answers = d.answers || {};
         doc.checkins = d.checkins || {};
         doc.errorBook = d.errorBook || [];
+        doc.seenQuestions = d.seenQuestions || {};
         doc.students = d.students || [];
         doc.parentStudents = d.parentStudents || {};
         doc.classes = d.classes || [];
@@ -150,6 +151,7 @@ const Store = {
         answers: d.answers,
         checkins: d.checkins,
         errorBook: d.errorBook,
+        seenQuestions: d.seenQuestions,
         students: d.students,
         parentStudents: d.parentStudents,
         classes: d.classes,
@@ -233,6 +235,92 @@ const RecStore = {
   all(store) { return this._tx(store, 'readonly', s => s.getAll()); },
 };
 
+// ---------------------------------------------------------------------------
+// Homework merge — checkins / answers / errorBook travel in the cloud blob
+// too. These collections are append-mostly keyed maps, so a field-by-field
+// union merge is safe and is what makes "打卡数据只存本机" impossible:
+// every device converges on the union, and clearing a phone's browser data
+// no longer loses a child's record.
+//
+// Conflict rules (keyed by the same keys the renderers already read):
+//   checkins   — newer `.at` wins (a later recompute is more accurate)
+//   answers    — first answer wins (same rule as saveAnswer: not gameable)
+//   errorBook  — union by id
+//   parentStudents — union by phone; local wins on conflict (teacher edits)
+// ---------------------------------------------------------------------------
+const HwMerge = {
+  mergeKeyed(local, cloud, newerWins) {
+    const out = {};
+    // Start from local, then let cloud entries in.
+    Object.keys(local || {}).forEach(k => { out[k] = local[k]; });
+    Object.keys(cloud || {}).forEach(k => {
+      const c = cloud[k], l = out[k];
+      if (!l) { out[k] = c; return; }
+      if (!c) return;
+      const ca = c.at || '', la = l.at || '';
+      if (!ca || !la) return;               // no timestamp — keep local
+      if (ca === la) return;
+      if (newerWins ? ca > la : ca < la) out[k] = c;
+    });
+    return out;
+  },
+
+  // Union into `target` IN PLACE (same object identity the renderers hold).
+  adoptKeyed(target, merged) {
+    Object.keys(target).forEach(k => { if (!merged[k]) delete target[k]; });
+    Object.keys(merged).forEach(k => { target[k] = merged[k]; });
+  },
+
+  mergeErrorBook(local, cloud) {
+    const out = (local || []).slice();
+    const seen = {};
+    out.forEach(r => { if (r && r.id) seen[r.id] = true; });
+    (cloud || []).forEach(r => {
+      if (!r) return;
+      const key = r.id || ('k' + JSON.stringify(r));
+      if (!seen[key]) { out.push(r); seen[key] = true; }
+    });
+    return out;
+  },
+
+  // Merge cloud homework fields into Store's doc IN PLACE, then persist.
+  // Returns true if anything new arrived from the cloud.
+  adoptFromCloud(cloudData) {
+    if (!cloudData) return false;
+    const d = Store.doc();
+    let changed = false;
+    if (cloudData.checkins && typeof cloudData.checkins === 'object') {
+      const merged = this.mergeKeyed(d.checkins, cloudData.checkins, true);
+      if (Object.keys(merged).length !== Object.keys(d.checkins).length) changed = true;
+      this.adoptKeyed(d.checkins, merged);
+    }
+    if (cloudData.answers && typeof cloudData.answers === 'object') {
+      const merged = this.mergeKeyed(d.answers, cloudData.answers, false);
+      if (Object.keys(merged).length !== Object.keys(d.answers).length) changed = true;
+      this.adoptKeyed(d.answers, merged);
+    }
+    if (Array.isArray(cloudData.errorBook)) {
+      const merged = this.mergeErrorBook(d.errorBook, cloudData.errorBook);
+      if (merged.length !== d.errorBook.length) changed = true;
+      d.errorBook.length = 0;
+      merged.forEach(r => d.errorBook.push(r));
+    }
+    if (cloudData.parentStudents && typeof cloudData.parentStudents === 'object') {
+      Object.keys(cloudData.parentStudents).forEach(k => {
+        if (!d.parentStudents[k]) { d.parentStudents[k] = cloudData.parentStudents[k]; changed = true; }
+      });
+    }
+    if (cloudData.seenQuestions && typeof cloudData.seenQuestions === 'object') {
+      if (!d.seenQuestions) d.seenQuestions = {};
+      Object.keys(cloudData.seenQuestions).forEach(k => {
+        if (!d.seenQuestions[k]) { d.seenQuestions[k] = cloudData.seenQuestions[k]; changed = true; }
+      });
+    }
+    if (changed) Store.flush();
+    return changed;
+  },
+};
+
 // ===========================================================================
 // CloudSync — the two-way merge against cloud.js
 //
@@ -284,6 +372,13 @@ const CloudSync = {
       cloudData.classes.forEach(c => { if (c && !mergedClasses.includes(c)) mergedClasses.push(c); });
     }
 
+    // Homework collections ride the same blob. Merge whatever the cloud
+    // already has into the local doc first, so the payload we push is the
+    // UNION — a phone that was offline for days re-uploads everything it
+    // heard about, and nothing another device saved gets overwritten away.
+    try { HwMerge.adoptFromCloud(cloudData); } catch (eh) { console.warn('hw merge up:', eh); }
+    const hwDoc = Store.doc();
+
     const payload = {
       students: mergedStudents.map(s => ({
         id: s.id,
@@ -294,6 +389,11 @@ const CloudSync = {
         registeredAt: s.registeredAt || new Date().toISOString(),
       })),
       classes: mergedClasses,
+      checkins: hwDoc.checkins,
+      answers: hwDoc.answers,
+      errorBook: hwDoc.errorBook,
+      parentStudents: hwDoc.parentStudents,
+      seenQuestions: hwDoc.seenQuestions,
       lastUpdated: new Date().toISOString(),
     };
 
@@ -340,6 +440,11 @@ const CloudSync = {
     if (cloudData.classes && Array.isArray(cloudData.classes)) {
       cloudData.classes.forEach(c => { if (c && !localClasses.includes(c)) localClasses.push(c); });
     }
+
+    // Pull homework collections down too — this is how a teacher device sees
+    // check-ins that happened on student phones, and how a student who
+    // cleared their browser data gets their history back.
+    try { HwMerge.adoptFromCloud(cloudData); } catch (eh) { console.warn('hw merge down:', eh); }
 
     return { ok: true, empty: false, unreachable: false };
   },
@@ -460,6 +565,7 @@ const Api = {
     };
     d.answers[key] = rec;
     Store.flush();
+    this._queueHomeworkSync();
     return { recorded: true, record: rec };
   },
 
@@ -499,11 +605,25 @@ const Api = {
     };
     d.checkins[key] = rec;
     Store.flush();
+    this._queueHomeworkSync();
     return rec;
   },
 
   async getCheckin(studentId, dayIdx) {
     return Store.doc().checkins[this.checkinKey(studentId, dayIdx)] || null;
+  },
+
+  // Record that this child has answered a question (or learned a word), so
+  // the bank can avoid repeating it. Synced to cloud with the homework data
+  // so the memory follows the student across devices.
+  async markQuestionSeen(id) {
+    if (!id) return;
+    const d = Store.doc();
+    if (!d.seenQuestions) d.seenQuestions = {};
+    if (d.seenQuestions[id]) return;
+    d.seenQuestions[id] = new Date().toISOString();
+    Store.flush();
+    this._queueHomeworkSync();
   },
 
   // -- vocabulary ---------------------------------------------------------
@@ -675,6 +795,10 @@ const Api = {
     return done;
   },
 
+  // -- session accessors used by app.js ------------------------------------
+  doc() { return Store.doc(); },
+  flushStore() { return Store.flush(); },
+
   // -- cloud sync ---------------------------------------------------------
   async syncUp(students, classes) {
     const res = await CloudSync.up(students, classes);
@@ -689,6 +813,25 @@ const Api = {
     const res = await CloudSync.down(students, classes);
     if (res.ok) Store.flush();
     return res;
+  },
+
+  // Debounced push of homework data (answers/checkins/errorBook) right after
+  // a child answers or checks in. Without this the cloud only ever saw the
+  // roster — a cleared browser wiped every check-in with it. 2.5s debounce
+  // folds a burst of rapid answers into one upload; data is already safe in
+  // localStorage the moment saveAnswer returns.
+  _hwSyncTimer: null,
+  _queueHomeworkSync() {
+    const self = this;
+    try {
+      if (this._hwSyncTimer) clearTimeout(this._hwSyncTimer);
+      this._hwSyncTimer = setTimeout(function() {
+        self._hwSyncTimer = null;
+        if (!self.cloudAvailable()) return;
+        const d = Store.doc();
+        CloudSync.up(d.students, d.classes).catch(function() {});
+      }, 2500);
+    } catch (e) {}
   },
 
   syncError() { return CloudSync.lastError(); },

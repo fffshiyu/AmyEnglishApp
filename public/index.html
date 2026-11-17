@@ -195,7 +195,7 @@ input,textarea,select{font-family:inherit;font-size:14px;outline:none}
 .cont-item.miss{border-color:var(--line);color:var(--ink-3)}
 
 /* 语音识别对比：逐词标记 */
-.align-sentence{font-size:19px;line-height:1.9;margin:4px 0 8px;word-spacing:2px}
+.align-sentence{font-size:16px;line-height:1.7;margin:4px 0 6px;word-spacing:2px}
 .w-ok{color:var(--ink)}
 .w-bad{color:#D6321F;text-decoration:underline wavy #D6321F;text-underline-offset:4px;cursor:help}
 .w-miss{color:var(--ink-3);text-decoration:line-through}
@@ -397,22 +397,33 @@ body.stage-mode .content-area{padding-block:0}
 }
 
 /* Speaking */
-.speaking-card{background:var(--card);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow-lg);max-width:600px;margin:0 auto;text-align:center}
-.speak-sentence{font-size:20px;font-weight:600;margin:16px 0;color:var(--text)}
-.speak-sentence-cn{font-size:14px;color:var(--text-sub);margin-bottom:16px}
-.speak-btn{padding:12px 24px;background:var(--primary);color:#fff;border-radius:24px;font-size:14px;font-weight:600;display:inline-flex;align-items:center;gap:6px}
+.speaking-card{background:var(--card);border-radius:var(--radius);padding:14px;box-shadow:var(--shadow-lg);max-width:600px;margin:0 auto;text-align:center}
+.speak-sentence{font-size:18px;font-weight:600;margin:8px 0;color:var(--text);line-height:1.5}
+.speak-sentence-cn{font-size:13px;color:var(--text-sub);margin-bottom:8px}
+.speak-btn{padding:9px 18px;background:var(--primary);color:#fff;border-radius:22px;font-size:13px;font-weight:600;display:inline-flex;align-items:center;gap:6px}
 .speak-btn:hover{background:var(--primary-dark)}
 .speak-btn.play{background:var(--info)}
-.speak-options{display:flex;flex-direction:column;gap:8px;margin:16px 0}
-.speak-option{padding:12px;border:2px solid #FFE0CC;border-radius:var(--radius-sm);font-size:14px;cursor:pointer}
+.speak-options{display:flex;flex-direction:column;gap:6px;margin:10px 0}
+.speak-option{padding:9px 12px;border:2px solid #FFE0CC;border-radius:var(--radius-sm);font-size:14px;cursor:pointer;line-height:1.4}
 .speak-option:hover{border-color:var(--primary);background:var(--primary-light)}
 .speak-option.correct{border-color:var(--success);background:var(--success-light)}
 .speak-option.wrong{border-color:var(--danger);background:var(--danger-light)}
-.speak-tip{background:var(--info-light);border-radius:var(--radius-sm);padding:10px;font-size:12px;margin:12px 0;display:none}
+.speak-tip{background:var(--info-light);border-radius:var(--radius-sm);padding:8px;font-size:12px;margin:8px 0;display:none;text-align:left}
 .speak-tip.show{display:block}
-.speak-record{background:var(--danger-light);border-radius:var(--radius-sm);padding:12px;margin-top:12px;display:none}
+.speak-record{background:var(--danger-light);border-radius:var(--radius-sm);padding:10px;margin-top:10px;display:none}
 .speak-record.show{display:block}
-.speak-score{font-size:36px;font-weight:700;margin:8px 0}
+.speak-score{font-size:28px;font-weight:700;margin:4px 0}
+/* Recording mode: everything else on the card steps aside so the sentence,
+   the mic and the stop button share one screen — no scrolling mid-read. */
+.speaking-card.is-recording>*{display:none}
+.speaking-card.is-recording>[id^="sp-read-"]{display:block}
+.speaking-card.is-recording .speak-record{margin-top:0;background:var(--card)}
+.rec-panel-sentence{font-size:19px;font-weight:600;line-height:1.5;color:var(--text);margin-bottom:10px;cursor:pointer}
+.rec-panel-row{display:flex;align-items:center;justify-content:center;gap:12px;margin:4px 0 8px}
+.rec-panel-row .rec-info{text-align:left}
+.rec-sm{width:52px;height:52px;margin:0}
+.rec-sm .rec-mic{font-size:28px}
+.rec-sm .rec-pulse{width:52px;height:52px}
 .speak-words{font-size:12px;color:var(--text-sub);margin-top:8px}
 .voice-select{display:flex;gap:8px;justify-content:center;margin-bottom:12px}
 .voice-select button{padding:6px 14px;border-radius:16px;background:var(--bg);font-size:12px;color:var(--text-sub)}
@@ -525,9 +536,9 @@ body.stage-mode .content-area{padding-block:0}
 @keyframes pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.2);opacity:.7}}
 
 /* Recording indicator */
-.recording-indicator{position:relative;display:inline-flex;align-items:center;justify-content:center;width:80px;height:80px;margin:8px auto}
-.rec-mic{font-size:40px;z-index:2;animation:micBounce 1s ease-in-out infinite}
-.rec-pulse{position:absolute;width:80px;height:80px;border-radius:50%;background:rgba(255,77,79,.3);animation:recPulse 1.5s ease-out infinite}
+.recording-indicator{position:relative;display:inline-flex;align-items:center;justify-content:center;width:64px;height:64px;margin:6px auto}
+.rec-mic{font-size:32px;z-index:2;animation:micBounce 1s ease-in-out infinite}
+.rec-pulse{position:absolute;width:64px;height:64px;border-radius:50%;background:rgba(255,77,79,.3);animation:recPulse 1.5s ease-out infinite}
 @keyframes micBounce{0%,100%{transform:scale(1)}50%{transform:scale(1.15)}}
 @keyframes recPulse{0%{transform:scale(0.8);opacity:0.8}100%{transform:scale(1.6);opacity:0}}
 .rec-timer{font-size:14px;color:var(--primary);font-weight:600;margin-top:8px}
@@ -772,12 +783,13 @@ body.stage-mode .content-area{padding-block:0}
   <div class="modal" id="modal-box"></div>
 </div>
 
-<script src="cloud.js?v=51"></script>
-<script src="data.js?v=51"></script>
+<script src="cloud.js?v=52"></script>
+<script src="data.js?v=52"></script>
+<script src="data-weeks.js?v=52"></script>
 <!-- api.js must load before app.js: app.js calls Api at init. -->
-<script src="recorder.js?v=51"></script>
-<script src="api.js?v=51"></script>
-<script src="app.js?v=51"></script>
+<script src="recorder.js?v=52"></script>
+<script src="api.js?v=52"></script>
+<script src="app.js?v=53"></script>
 <script>
 // Register Service Worker for PWA
 if ('serviceWorker' in navigator) {
